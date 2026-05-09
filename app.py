@@ -1,3 +1,4 @@
+# Title: Compare Car
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -97,10 +98,17 @@ def save_simulation(name: str, ipva_default: float, horizon: int, investment_ret
 
 def load_simulation(name: str) -> tuple[float, int, float, list[CarInputs]]:
     file_path = SIMULATIONS_DIR / f"{name}.json"
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    cars = [CarInputs(**car_data) for car_data in data["cars"]]
-    return data["ipva_default"], data["horizon"], data["investment_return"], cars
+    if not file_path.exists():
+        raise FileNotFoundError(f"Simulation file '{name}.json' not found.")
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cars = [CarInputs(**car_data) for car_data in data["cars"]]
+        return data["ipva_default"], data["horizon"], data["investment_return"], cars
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Error decoding JSON from '{name}.json': {e}")
+    except KeyError as e:
+        raise ValueError(f"Missing expected key in '{name}.json': {e}")
 
 
 def list_simulations() -> list[str]:
@@ -429,26 +437,26 @@ def simulate_car(car: CarInputs, current_value: float, investment_return: float)
 
 
 def add_general_assumptions(ipva_default_val: float = 4.0, horizon_val: int = 5, investment_return_val: float = 10.0) -> tuple[float, int, float]:
-    st.subheader("Premissas gerais")
+    st.subheader("📋 Premissas Gerais da Análise")
     col1, col2, col3 = st.columns(3)
 
-    state = col1.selectbox("Estado", sorted(STATE_IPVA_DEFAULTS), index=sorted(STATE_IPVA_DEFAULTS).index("SP"))
+    state = col1.selectbox("🏠 Estado", sorted(STATE_IPVA_DEFAULTS), index=sorted(STATE_IPVA_DEFAULTS).index("SP"), help="Selecione o estado onde o veículo será registrado para aplicar a alíquota de IPVA correta")
     ipva_default = col1.number_input(
-        "Aliquota padrao de IPVA (% a.a.)",
+        "📊 Alíquota Padrão de IPVA (% ao ano)",
         min_value=0.0,
         max_value=10.0,
         value=ipva_default_val,
         step=0.1,
-        help="Default editavel. Regras reais podem variar por UF, combustivel, ano e isencoes.",
+        help="Percentual padrão do estado para IPVA. Nota: a alíquota real pode variar conforme combustível, ano de fabricação e possíveis isenções. Você pode ajustar por carro específico.",
     )
-    horizon = col2.slider("Horizonte de comparacao (anos)", 1, 10, horizon_val)
+    horizon = col2.slider("⏱️ Período de Análise (anos)", 1, 10, horizon_val, help="Quantos anos você pretende manter ou usar o veículo? Quanto maior, mais custos de manutenção acumulam.")
     investment_return = col3.number_input(
-        "Rendimento liquido esperado (% a.a.)",
+        "💰 Retorno Esperado do Investimento (% ao ano)",
         min_value=0.0,
         max_value=30.0,
         value=investment_return_val,
         step=0.5,
-        help="Usado para calcular o custo de oportunidade do dinheiro extra colocado na troca.",
+        help="Qual seria o retorno do dinheiro se você não o gastasse na troca? (ex: aplicação financeira, CDI, poupança). Usado para calcular o 'custo de oportunidade' - o valor que você deixaria de ganhar investindo esse dinheiro.",
     )
     return ipva_default, horizon, investment_return
 
@@ -486,15 +494,22 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            nome = st.text_input("Nome", value=default_nome, key=f"name_{index}")
+            nome = st.text_input("🚗 Nome/Modelo", value=default_nome, key=f"name_{index}", help="Identifique o veículo (ex: 'HB20 1.0', 'Tiggo 8', 'e-Golf 2025')")
             pagamento = default_pagamento
             if not current:
-                pagamento = st.selectbox("Modalidade", ["A vista", "Financiado", "Assinatura"], index=["A vista", "Financiado", "Assinatura"].index(default_pagamento), key=f"pay_{index}")
-            tipo = st.selectbox("Tipo", ["Combustao", "Hibrido", "Eletrico"], index=["Combustao", "Hibrido", "Eletrico"].index(default_tipo), key=f"type_{index}")
+                pagamento = st.selectbox("💳 Forma de Pagamento", ["A vista", "Financiado", "Assinatura"], index=["A vista", "Financiado", "Assinatura"].index(default_pagamento), key=f"pay_{index}", help="Como o veículo será adquirido: compra à vista, compra financiada, ou contrato de assinatura/aluguel")
+            tipo = st.selectbox("⚡ Tipo de Combustível/Energia", ["Combustao", "Hibrido", "Eletrico"], index=["Combustao", "Hibrido", "Eletrico"].index(default_tipo), key=f"type_{index}", help="Escolha o tipo de propulsão do veículo")
             valor_default = 80_000.0 if current else 120_000.0
-            valor_label = "Valor de mercado hoje" if current else "Valor do modelo"
-            if pagamento == "Assinatura":
-                valor_label = "Valor de referencia do modelo"
+            if current:
+                valor_label = "💵 Valor de Mercado Atual"
+                help_text = "Valor do seu veículo atual (para venda). Usado para calcular o capital liberado ou adicional necessário na troca."
+            elif pagamento == "Assinatura":
+                valor_label = "💵 Valor de Referência do Modelo"
+                help_text = "Valor de mercado aproximado do modelo. Serve apenas como referência para calcular o seguro proporcional; não afeta o custo total da assinatura."
+            else:
+                valor_label = "💵 Preço do Modelo (à vista)"
+                help_text = "Preço de mercado do veículo novo. Será usado para calcular IPVA e o capital adicional/liberado em relação ao carro atual."
+            
             valor_base = st.number_input(
                 valor_label,
                 0.0,
@@ -502,21 +517,21 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
                 default_valor_base,
                 1_000.0,
                 key=f"value_{index}",
-                help="Na compra, usado para IPVA e capital adicional. Na assinatura, e apenas referencia do modelo.",
+                help=help_text,
             )
-            km_mes = st.number_input("Km por mes", 0.0, 20_000.0, default_km_mes, 100.0, key=f"km_{index}")
+            km_mes = st.number_input("📍 Quilometragem Mensal (km)", 0.0, 20_000.0, default_km_mes, 100.0, key=f"km_{index}", help="Quantos km você estima rodar por mês? Afeta o custo de combustível/energia, pneus e manutenção.")
             ipva = default_ipva
             if pagamento != "Assinatura":
-                ipva = st.number_input("IPVA (% a.a.)", 0.0, 10.0, default_ipva, 0.1, key=f"ipva_{index}")
+                ipva = st.number_input("📋 IPVA (% ao ano)", 0.0, 10.0, default_ipva, 0.1, key=f"ipva_{index}", help="Alíquota do Imposto sobre Propriedade de Veículos Automotores. Pode variar conforme o tipo de combustível e ano do veículo no seu estado.")
             if not current and current_value is not None:
                 if pagamento == "Assinatura":
-                    st.info(f"Capital liberado ao vender o carro atual: {money(current_value)}")
+                    st.info(f"💰 **Capital Liberado ao Vender o Carro Atual:** {money(current_value)}\n\nEsse valor poderá ser investido, gerando rendimentos que reduzem o custo efetivo da assinatura.")
                 else:
                     diff = valor_base - current_value
                     if diff >= 0:
-                        st.info(f"Capital adicional vs carro atual: {money(diff)}")
+                        st.warning(f"💸 **Capital Adicional Necessário:** {money(diff)}\n\nVocê precisará de {money(diff)} além do valor do carro atual para fazer essa troca (à vista ou financiar essa diferença).")
                     else:
-                        st.info(f"Capital liberado vs carro atual: {money(abs(diff))}")
+                        st.success(f"💰 **Capital Liberado vs Carro Atual:** {money(abs(diff))}\n\nO novo modelo é mais barato! Você libera {money(abs(diff))} que poderá ser investido.")
 
         with col2:
             consumo_l = default_consumo_l
@@ -526,32 +541,33 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
             percentual_recarga_externa = default_percentual_recarga
 
             if tipo == "Combustao":
-                consumo_l = st.number_input("Consumo (km/l)", 0.1, 100.0, default_consumo_l, 0.5, key=f"km_l_{index}")
-                preco_combustivel = st.number_input("Combustivel (R$/l)", 0.0, 20.0, default_preco_combustivel, 0.05, key=f"fuel_price_{index}")
+                consumo_l = st.number_input("⛽ Consumo de Combustível (km/l)", 0.1, 100.0, default_consumo_l, 0.5, key=f"km_l_{index}", help="Quantos quilômetros o carro percorre com 1 litro de combustível. Dados do fabricante ou do seu uso real.")
+                preco_combustivel = st.number_input("💰 Preço da Gasolina (R$/litro)", 0.0, 20.0, default_preco_combustivel, 0.05, key=f"fuel_price_{index}", help="Preço atual ou estimado do combustível na sua região.")
 
             if tipo == "Hibrido":
                 consumo_l = st.number_input(
-                    "Consumo no modo gerador (km/l equiv.)",
+                    "⛽ Consumo no Modo Motor (km/l equivalente)",
                     0.1,
                     100.0,
                     default_consumo_l,
                     0.5,
                     key=f"km_l_{index}",
-                    help="Use o consumo real quando a bateria e sustentada pelo motor gerador.",
+                    help="Consumo quando a bateria está descarregada e o motor a combustão sustenta a energia. Use dados realistas da sua experiência.",
                 )
-                preco_combustivel = st.number_input("Combustivel (R$/l)", 0.0, 20.0, default_preco_combustivel, 0.05, key=f"fuel_price_{index}")
+                preco_combustivel = st.number_input("💰 Preço da Gasolina (R$/litro)", 0.0, 20.0, default_preco_combustivel, 0.05, key=f"fuel_price_{index}", help="Preço atual ou estimado do combustível na sua região.")
                 percentual_recarga_externa = st.slider(
-                    "% da energia carregada na tomada",
+                    "🔌 Percentual de Energia Carregada na Tomada (%)",
                     0.0,
                     100.0,
                     default_percentual_recarga,
                     5.0,
                     key=f"external_charge_{index}",
+                    help="Que porcentagem da energia vem de carregamento externo (tomada)? Ex: 50% = metade do trajeto com energia elétrica.",
                 )
 
             if tipo == "Eletrico" or (tipo == "Hibrido" and percentual_recarga_externa > 0):
-                consumo_kwh = st.number_input("Consumo (km/kWh)", 0.1, 20.0, default_consumo_kwh, 0.1, key=f"km_kwh_{index}")
-                preco_kwh = st.number_input("Energia (R$/kWh)", 0.0, 5.0, default_preco_kwh, 0.05, key=f"kwh_price_{index}")
+                consumo_kwh = st.number_input("⚡ Eficiência Energética (km/kWh)", 0.1, 20.0, default_consumo_kwh, 0.1, key=f"km_kwh_{index}", help="Quantos quilômetros o carro percorre com 1 kWh de energia. Valores típicos: 4-7 km/kWh.")
+                preco_kwh = st.number_input("💰 Tarifa de Energia (R$/kWh)", 0.0, 5.0, default_preco_kwh, 0.05, key=f"kwh_price_{index}", help="Preço da energia elétrica na sua região (residencial ou pública).")
 
         with col3:
             entrada_extra = 0.0
@@ -563,12 +579,12 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
             if pagamento == "Financiado":
                 capital_diff = valor_base - current_value if not current and current_value is not None else 0
                 entrada_percentual = (default_entrada_extra / valor_base * 100) if valor_base > 0 else 20.0
-                entrada_percentual = st.slider("Percentual de entrada sobre o valor total do carro (%)", 0.0, 100.0, entrada_percentual, 5.0, key=f"down_pct_{index}")
+                entrada_percentual = st.slider("💵 Percentual de Entrada (% do valor total)", 0.0, 100.0, entrada_percentual, 5.0, key=f"down_pct_{index}", help="Quanto você vai dar de entrada? 20-30% é comum. Quanto maior, menores os juros totais.")
                 entrada_extra = valor_base * entrada_percentual / 100
-                taxa = st.number_input("Juros (% a.m.)", 0.0, 10.0, default_taxa, 0.05, key=f"rate_{index}")
-                prazo = st.number_input("Prazo (meses)", 1, 120, default_prazo, 6, key=f"term_{index}")
+                taxa = st.number_input("📈 Taxa de Juros Mensais (%)", 0.0, 10.0, default_taxa, 0.05, key=f"rate_{index}", help="Taxa mensal do financiamento. Típica: 0,8% a 2,5% a.m. (9,6% a 30% ao ano).")
+                prazo = st.number_input("⏱️ Prazo do Financiamento (meses)", 1, 120, default_prazo, 6, key=f"term_{index}", help="Quantos meses para pagar? Comum: 24, 36, 48 ou 60 meses.")
                 if entrada_extra > 0:
-                    st.info(f"Entrada calculada: {money(entrada_extra)}")
+                    st.info(f"✅ **Entrada Calculada:** {money(entrada_extra)}\n\nVoc\u00ea pagará esse valor hoje. O restante será parcelado nos {int(prazo)} meses seguintes.")
                 # Calcular e exibir parcela mensal
                 if capital_diff > 0 and entrada_extra < capital_diff:
                     parcela_mensal = financing_monthly_payment(
@@ -602,35 +618,35 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
                         ),
                         capital_diff
                     )
-                    st.success(f"Parcela mensal estimada: {monthly_money(parcela_mensal)}")
+                    st.success(f"💳 **Parcela Mensal Estimada:** {monthly_money(parcela_mensal)}\n\nEsse é o valor que você pagará por mês durante o financiamento (apenas principal + juros, sem outros custos).")
 
             if pagamento == "Assinatura":
-                assinatura_mensal = st.number_input("Mensalidade da assinatura", 0.0, 100_000.0, default_assinatura_mensal, 100.0, key=f"sub_month_{index}")
-                taxa_inicial_assinatura = st.number_input("Taxa inicial/adesao", 0.0, 100_000.0, default_taxa_inicial_assinatura, 500.0, key=f"sub_fee_{index}")
+                assinatura_mensal = st.number_input("📅 Mensalidade da Assinatura (R$/mês)", 0.0, 100_000.0, default_assinatura_mensal, 100.0, key=f"sub_month_{index}", help="Valor mensal que você pagará. Geralmente inclui seguro, manutenção e assistência.")
+                taxa_inicial_assinatura = st.number_input("💳 Taxa Inicial/Adesão (R$)", 0.0, 100_000.0, default_taxa_inicial_assinatura, 500.0, key=f"sub_fee_{index}", help="Custo único no início do contrato de assinatura.")
                 seguro = 0.0
                 licenciamento = 0.0
-                st.info("IPVA, seguro, licenciamento, revisoes, manutencao e pneus foram considerados inclusos na assinatura.")
+                st.info("✅ Na assinatura, IPVA, seguro, licenciamento, revisões, manutenção e pneus estão geralmente inclusos. Abaixo informamos apenas custos adicionais (estacionamento, etc.).")
             else:
-                seguro = st.number_input("Seguro anual", 0.0, 100_000.0, default_seguro, 250.0, key=f"ins_{index}")
-                licenciamento = st.number_input("Licenciamento anual", 0.0, 10_000.0, default_licenciamento, 50.0, key=f"lic_{index}")
+                seguro = st.number_input("🛡️ Seguro Anual (R$)", 0.0, 100_000.0, default_seguro, 250.0, key=f"ins_{index}", help="Prêmio anual do seguro do veículo. Geralmente é ~3-4% do valor do carro.")
+                licenciamento = st.number_input("📝 Licenciamento Anual (R$)", 0.0, 10_000.0, default_licenciamento, 50.0, key=f"lic_{index}", help="Valor anual do licenciamento/emplacamento. Típico: R$ 200-400.")
 
         if pagamento == "Assinatura":
-            st.caption("Custos fora do contrato")
+            st.caption("🚗 Custos Adicionais (não inclusos na assinatura)")
             c1, c2 = st.columns(2)
             manutencao = 0.0
             pneus = 0.0
-            estacionamento = c1.number_input("Estacionamento/ano", 0.0, 100_000.0, default_estacionamento, 100.0, key=f"park_{index}")
-            outros = c2.number_input("Outros/ano", 0.0, 100_000.0, default_outros, 100.0, key=f"other_{index}")
+            estacionamento = c1.number_input("🅿️ Estacionamento/ano (R$)", 0.0, 100_000.0, default_estacionamento, 100.0, key=f"park_{index}", help="Custo anual de estacionamento, garagem, valet, etc.")
+            outros = c2.number_input("📦 Outros Custos/ano (R$)", 0.0, 100_000.0, default_outros, 100.0, key=f"other_{index}", help="Multas, pedágios, lavagens frequentes, acessórios, etc.")
             revisoes = tuple(0.0 for _ in range(horizon))
         else:
-            st.caption("Custos de manutencao e uso")
+            st.caption("🔧 Custos de Manutenção e Uso do Veículo")
             c1, c2, c3, c4 = st.columns(4)
-            manutencao = c1.number_input("Manutencao/ano", 0.0, 100_000.0, default_manutencao, 100.0, key=f"maint_{index}")
-            pneus = c2.number_input("Pneus/ano", 0.0, 100_000.0, default_pneus, 100.0, key=f"tires_{index}")
-            estacionamento = c3.number_input("Estacionamento/ano", 0.0, 100_000.0, default_estacionamento, 100.0, key=f"park_{index}")
-            outros = c4.number_input("Outros/ano", 0.0, 100_000.0, default_outros, 100.0, key=f"other_{index}")
+            manutencao = c1.number_input("🔧 Manutenção/ano (R$)", 0.0, 100_000.0, default_manutencao, 100.0, key=f"maint_{index}", help="Óleos, filtros, fluidos, correias, etc. Típico: R$ 500-1500/ano.")
+            pneus = c2.number_input("⛩️ Pneus/ano (R$)", 0.0, 100_000.0, default_pneus, 100.0, key=f"tires_{index}", help="Rodízio, reposição e balanceamento. Típico: R$ 800-1500/ano.")
+            estacionamento = c3.number_input("🅿️ Estacionamento/ano (R$)", 0.0, 100_000.0, default_estacionamento, 100.0, key=f"park_{index}", help="Custo anual de estacionamento, garagem, valet, etc.")
+            outros = c4.number_input("📦 Outros/ano (R$)", 0.0, 100_000.0, default_outros, 100.0, key=f"other_{index}", help="Multas, pedágios, lavagens, acessórios, etc.")
 
-            st.caption("Revisoes por ano")
+            st.caption("💰 Custos de Revisão por Ano")
             revision_columns = st.columns(min(horizon, 5))
             revisoes = []
             for year in range(1, horizon + 1):
@@ -643,6 +659,7 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
                         default_revisoes[year - 1] if year <= len(default_revisoes) else 1200.0 + 250.0 * ((year - 1) % 3),
                         100.0,
                         key=f"rev_{index}_{year}",
+                        help=f"Custo estimado de revisão no ano {year}. Revisões maiores a cada 3 anos (revisão de 40mil km).",
                     )
                 )
 
@@ -926,8 +943,8 @@ def build_pdf_report(
 
 def main() -> None:
     st.set_page_config(page_title="Comparador de custo de manter carros", layout="wide")
-    st.title("Comparador de custo de manter carros")
-    st.caption("Compare manter, comprar ou assinar: combustivel/energia, assinatura, IPVA, seguro, manutencao e custo de oportunidade.")
+    st.title("🚗 Comparador de Custo de Manter Veículos")
+    st.caption("📃 Compare o custo total: comprar à vista, financiar ou assinar. Lev em conta combustível/energia, assinatura, IPVA, seguro, manutenção, revisões e custo de oportunidade do capital.")
 
     # Carregar valores da sessão se existirem
     ipva_default_val = st.session_state.get("ipva_default", 4.0)
@@ -938,93 +955,93 @@ def main() -> None:
     ipva_default, horizon, investment_return = add_general_assumptions(ipva_default_val, horizon_val, investment_return_val)
 
     # Carregar Simulação (antes dos forms)
-    with st.expander("Carregar Simulação Salva", expanded=False):
+    with st.expander("📂 Carregar Simulação Salva", expanded=False):
         simulations = list_simulations()
         if simulations:
-            selected_sim = st.selectbox("Selecionar simulação para carregar", [""] + simulations, key="load_sim")
-            if st.button("Carregar", key="btn_load") and selected_sim and selected_sim != "":
+            selected_sim = st.selectbox("Selecione uma simulação para carregar", [""] + simulations, key="load_sim", help="Clique para restaurar uma simulação anterior com todos os seus parâmetros.")
+            if st.button("✅ Carregar", key="btn_load", use_container_width=True) and selected_sim and selected_sim != "":
                 try:
                     ipva_default, horizon, investment_return, cars_loaded_temp = load_simulation(selected_sim)
                     st.session_state["ipva_default"] = ipva_default
                     st.session_state["horizon"] = horizon
                     st.session_state["investment_return"] = investment_return
                     st.session_state["cars"] = cars_loaded_temp
-                    st.success(f"Simulação '{selected_sim}' carregada! Recarregue a página para ver as mudanças (pressione F5).")
+                    st.success(f"✅ Simulação '{selected_sim}' carregada! Recarregue a página para ver as mudanças (pressione **F5**).")
                 except Exception as e:
-                    st.error(f"Erro ao carregar: {e}")
+                    st.error(f"❌ Erro ao carregar: {e}")
         else:
-            st.info("Nenhuma simulação salva.")
+            st.info("ℹ️ Nenhuma simulação salva ainda. Crie uma novo análise e salve-a!")
 
-    st.subheader("Raciocinio")
+    st.subheader("🧠 Como Funciona a Análise")
     st.write(
-        "Na compra, o valor do carro e usado para calcular IPVA e medir capital adicional ou liberado. "
-        "Na assinatura, o app soma taxa inicial, mensalidades e custos fora do contrato, considerando que o valor "
-        "do carro atual poderia ser vendido e ficar rendendo. A decisao fica: o custo de uso compensa comprar ou assinar?"
+        "**Na compra:** O valor do carro é usado para calcular IPVA e medir quanto de capital adicional (ou liberado) está envolvido na troca. "
+        "**Na assinatura:** Somamos taxa inicial, mensalidades e custos adicionais, reconhecendo que o dinheiro do carro atual poderia ser investido. "
+        "**A pergunta principal:** Qual opção (manter, comprar ou assinar) gera o menor custo total considerando todos esses fatores ao longo do período analisado?"
     )
 
     current = car_form(0, ipva_default, horizon, default_car=cars_loaded[0] if cars_loaded else None)
-    model_count = st.number_input("Quantidade de modelos para comparar", min_value=1, max_value=20, value=len(cars_loaded) - 1 if cars_loaded else 2, step=1)
+    model_count = st.number_input("💶 Quantos Modelos Alternativos Comparar?", min_value=1, max_value=20, value=len(cars_loaded) - 1 if cars_loaded else 2, step=1, help="Quantos outros carros/opções você quer comparar contra o atual?")  
     cars = [current] + [car_form(i, ipva_default, horizon, current.valor_base, default_car=cars_loaded[i] if cars_loaded and i < len(cars_loaded) else None) for i in range(1, int(model_count) + 1)]
 
     # Salvar e Gerenciar Simulações (depois dos forms)
-    with st.expander("Salvar e Gerenciar Simulações", expanded=False):
+    with st.expander("💾 Salvar e Gerenciar Simulações", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("Salvar Simulação Atual")
-            save_name = st.text_input("Nome da simulação", key="save_name")
-            if st.button("Salvar", key="btn_save") and save_name:
+            st.subheader("💿 Salvar Simulação Atual")
+            save_name = st.text_input("Nome da simulação", key="save_name", placeholder="Ex: HB20 vs Gol - Mar/2026")
+            if st.button("💾 Salvar", key="btn_save", use_container_width=True) and save_name:
                 try:
                     st.session_state["ipva_default"] = ipva_default
                     st.session_state["horizon"] = horizon
                     st.session_state["investment_return"] = investment_return
                     st.session_state["cars"] = cars
                     save_simulation(save_name, ipva_default, horizon, investment_return, cars)
-                    st.success(f"Simulação '{save_name}' salva!")
+                    st.success(f"✅ Simulação '{save_name}' salva com sucesso!")
                 except Exception as e:
-                    st.error(f"Erro ao salvar: {e}")
+                    st.error(f"❌ Erro ao salvar: {e}")
         
         with col2:
-            st.subheader("Preview/Excluir Simulação")
+            st.subheader("👁️ Visualizar/Excluir Simulação")
             simulations = list_simulations()
             if simulations:
-                manage_sim = st.selectbox("Selecionar simulação para gerenciar", [""] + simulations, key="manage_sim")
+                manage_sim = st.selectbox("Selecione uma simulação para gerenciar", [""] + simulations, key="manage_sim")
                 if manage_sim and manage_sim != "":
-                    if st.button("Mostrar Preview", key="btn_preview"):
+                    if st.button("📋 Mostrar Preview", key="btn_preview", use_container_width=True):
                         try:
                             prev_ipva, prev_horizon, prev_return, prev_cars = load_simulation(manage_sim)
-                            st.write(f"**Nome:** {manage_sim}")
-                            st.write(f"**IPVA padrão:** {prev_ipva}%")
-                            st.write(f"**Horizonte:** {prev_horizon} anos")
-                            st.write(f"**Rendimento esperado:** {prev_return}% a.a.")
-                            st.write(f"**Número de carros:** {len(prev_cars)}")
+                            st.write(f"**📋 Nome:** {manage_sim}")
+                            st.write(f"**🏷️ IPVA Padrão:** {prev_ipva}%")
+                            st.write(f"**⏱️ Horizonte:** {prev_horizon} anos")
+                            st.write(f"**💹 Rendimento Esperado:** {prev_return}% a.a.")
+                            st.write(f"**🚗 Número de Carros:** {len(prev_cars)}")
                             for i, car in enumerate(prev_cars):
-                                with st.expander(f"Carro {i+1}: {car.nome}"):
+                                with st.expander(f"🚙 Carro {i+1}: {car.nome}"):
                                     st.write(f"**Tipo:** {car.tipo}")
                                     st.write(f"**Pagamento:** {car.pagamento}")
-                                    st.write(f"**Valor base:** R$ {car.valor_base:,.0f}")
+                                    st.write(f"**Valor:** R$ {car.valor_base:,.0f}")
                                     if car.pagamento == "Financiado":
                                         st.write(f"**Entrada:** R$ {car.entrada_extra:,.0f}")
                                         st.write(f"**Juros:** {car.taxa_juros_am}% a.m.")
                                         st.write(f"**Prazo:** {car.prazo_meses} meses")
                                     elif car.pagamento == "Assinatura":
                                         st.write(f"**Mensalidade:** R$ {car.assinatura_mensal:,.0f}")
-                                        st.write(f"**Taxa inicial:** R$ {car.taxa_inicial_assinatura:,.0f}")
+                                        st.write(f"**Taxa Inicial:** R$ {car.taxa_inicial_assinatura:,.0f}")
                         except Exception as e:
-                            st.error(f"Erro ao carregar preview: {e}")
+                            st.error(f"❌ Erro ao carregar preview: {e}")
                     
-                    if st.button("Excluir Simulação", key="btn_delete"):
+                    if st.button("🗑️ Excluir Simulação", key="btn_delete", use_container_width=True):
                         try:
                             file_path = SIMULATIONS_DIR / f"{manage_sim}.json"
                             if file_path.exists():
                                 file_path.unlink()
-                                st.success(f"Simulação '{manage_sim}' excluída!")
+                                st.success(f"✅ Simulação '{manage_sim}' excluída!")
                                 st.rerun()
                             else:
-                                st.error("Arquivo não encontrado.")
+                                st.error("❌ Arquivo não encontrado.")
                         except Exception as e:
-                            st.error(f"Erro ao excluir: {e}")
+                            st.error(f"❌ Erro ao excluir: {e}")
             else:
-                st.info("Nenhuma simulação para gerenciar.")
+                st.info("ℹ️ Nenhuma simulação para gerenciar.")
 
     simulations = pd.concat([simulate_car(car, current.valor_base, investment_return) for car in cars], ignore_index=True)
     final = simulations[simulations["Ano"] == horizon].copy().sort_values("Custo acumulado comparavel")
@@ -1034,38 +1051,47 @@ def main() -> None:
     final["Diferenca mensal vs atual"] = final["Diferenca vs carro atual"] / (horizon * 12)
     winner = final.iloc[0]
 
-    st.subheader("Resposta")
+    st.subheader("🎯 Resultado da Análise")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Melhor opcao", winner["Modelo"], money(winner["Custo acumulado comparavel"]))
-    c2.metric("Mensal efetivo do melhor", money(winner["Custo mensal efetivo"]))
+    c1.metric("✅ Melhor Opção", winner["Modelo"], money(winner["Custo acumulado comparavel"]), help="Opção com menor custo total acumulado no período analisado")
+    c2.metric("💰 Custo Mensal Efetivo", money(winner["Custo mensal efetivo"]), help="Custo total dividido pelos meses do período analisado")
     cheaper_count = int((final["Diferenca vs carro atual"] < 0).sum())
-    c3.metric("Modelos mais baratos que o atual", cheaper_count)
+    c3.metric("📊 Opções Mais Econômicas", cheaper_count, help="Quantos modelos saem mais baratos que manter o carro atual")
 
     if winner["ID"] == current.id:
-        st.success("Pelas premissas informadas, compensa ficar com o carro atual.")
+        st.success("✅ **Pela análise realizada, É MAIS ECONÔMICO FICAR COM O CARRO ATUAL.**\n\nOs custos de manutenção, depreciação (se aplicavel) e capital associados aos modelos alternativos superam os beneficios. Considere manter seu veículo atual neste período.")
     else:
-        st.success(f"Pelas premissas informadas, compensa trocar para {winner['Modelo']}.")
+        st.success(f"✅ **Pela análise realizada, É MAIS ECONÔMICO TROCAR PARA {winner['Modelo'].upper()}.**\n\nO modelo sugerido gera um custo total {money(abs(winner['Diferenca vs carro atual']))} {'maior' if winner['Diferenca vs carro atual'] > 0 else 'menor'} que manter o carro atual.")
 
-    with st.expander("Como o app chegou nessa resposta", expanded=True):
+    with st.expander("📖 Como o App Chegou Nessa Resposta?", expanded=True):
         st.markdown(
             f"""
-1. Soma os custos anuais de uso de cada alternativa: combustivel/energia, assinatura, IPVA, seguro, licenciamento, revisoes, manutencao, pneus e outros.
-2. Na compra, calcula a diferenca de capital contra o carro atual: valor do modelo menos valor do carro atual.
-3. Na assinatura, considera que o valor do carro atual seria liberado e poderia render.
-4. Aplica {investment_return:.1f}% ao ano sobre essa diferenca. Capital adicional vira custo; capital liberado vira beneficio.
-5. Se houver financiamento do capital adicional, soma apenas os juros estimados, nao o valor principal do carro.
-6. Vence quem tiver o menor custo acumulado comparavel no horizonte de {horizon} anos.
+1. **Custos Operacionais:** Soma todos os custos anuais de uso: combustível/energia, assinatura, IPVA, seguro, licenciamento, revisões, manutenção, pneus e outros.
+
+2. **Capital Inicial:** 
+   - Na **compra**: Calcula a diferença de capital = (Preço do modelo novo) - (Valor do carro atual)
+   - Na **assinatura**: Considera que o carro atual seria vendido e o dinheiro poderia ser investido
+
+3. **Custo de Oportunidade:** Aplica **{investment_return:.1f}% ao ano** sobre o capital envolvido. 
+   - Capital adicional = custo (você gasta mais dinheiro)
+   - Capital liberado = benefício (você ganha investindo)
+
+4. **Juros do Financiamento:** Se o carro for financiado, soma apenas os juros (não principal), pois o principal é o capital inicial.
+
+5. **Vencedor:** A opção com **menor custo acumulado comparável no horizonte de {horizon} anos** vence.
+
+**Interpretação:** Custos negativos vs atual = mais econômico. Custos positivos = mais caro.
             """
         )
 
-    st.subheader("Comparacao detalhada: cada modelo vs carro atual")
+    st.subheader("📊 Comparação Detalhada: Cada Modelo vs. Carro Atual")
     comparison_vs_current = final[final["ID"] != current.id][
         ["Modelo", "Diferenca vs carro atual", "Diferenca mensal vs atual", "Custo mensal efetivo", "Custo acumulado comparavel"]
     ].copy()
     comparison_vs_current["Leitura"] = np.where(
         comparison_vs_current["Diferenca vs carro atual"] < 0,
-        "Mais economico que atual",
-        np.where(comparison_vs_current["Diferenca vs carro atual"] > 0, "Mais caro que atual", "Mesmo custo que atual"),
+        "✅ Mais Econômico",
+        np.where(comparison_vs_current["Diferenca vs carro atual"] > 0, "❌ Mais Caro", "➡️ Mesmo Custo"),
     )
     comparison_vs_current["Economia vs atual"] = -comparison_vs_current["Diferenca vs carro atual"]
     st.dataframe(
@@ -1139,8 +1165,8 @@ def main() -> None:
     ]
     detailed_summary = detailed_summary[ordered_cols]
 
-    st.subheader("Exportar relatorio")
-    st.caption("O botao aparece aqui depois que os dados da analise forem calculados.")
+    st.subheader("📄 Exportar Relatório em PDF")
+    st.caption("Relatório completo com premissas, gráficos e tabelas detalhadas da análise.")
     try:
         pdf_bytes = build_pdf_report(
             cars=cars,
@@ -1165,14 +1191,15 @@ def main() -> None:
             horizon=horizon,
         )
         st.download_button(
-            "Exportar relatorio em PDF",
+            "📥 Exportar Relató rio em PDF",
             data=pdf_bytes,
             file_name="relatorio_comparacao_carros.pdf",
             mime="application/pdf",
             use_container_width=True,
+            help="Gera um PDF completo com premissas, gráficos e tabelas da análise."
         )
     except ModuleNotFoundError:
-        st.warning("Para exportar em PDF, instale a dependencia matplotlib. O arquivo run_app.bat ja tenta instalar pelo JFrog.")
+        st.warning("⚠️ Para exportar em PDF, instale a dependência `matplotlib`. O arquivo `run_app.bat` já tenta instalar automaticamente via JFrog.")
 
     st.dataframe(
         detailed_summary.style.format({col: money for col in ordered_cols if col != "Modelo"}),
@@ -1180,7 +1207,8 @@ def main() -> None:
     )
 
     # Tabela resumida de custos por categoria
-    st.subheader("Resumo de custos por categoria (total no horizonte)")
+    st.subheader("💸 Resumo de Custos por Categoria (Total no Período Analisado)")
+    st.caption("📋 Veja a decomposição de cada categoria de custo (combustível, IPVA, seguro, etc.) para cada modelo ao longo de todo o período.")
     summary_table = breakdown.copy()
     summary_table["Total custo"] = summary_table[cost_columns].sum(axis=1)
     summary_table = summary_table[["Modelo"] + cost_columns + ["Total custo"]]
@@ -1189,6 +1217,11 @@ def main() -> None:
         use_container_width=True,
     )
 
+    st.markdown("---")
+    st.subheader("📈 Gráficos de Análise")
+    st.markdown("Visualizações para entender melhor os custos e fazer comparações entre os modelos.")
+    
+    st.markdown("**1️⃣ Custo Acumulado ao Longo do Tempo** - Veja como o custo total cresceria a cada ano para cada opção")
     line_data = simulations.copy()
     line_data["Rotulo"] = line_data["Custo acumulado comparavel"].map(short_money)
     line_fig = px.line(
@@ -1198,7 +1231,7 @@ def main() -> None:
         color="Modelo",
         markers=True,
         text="Rotulo",
-        title="Custo acumulado para manter/usar cada opcao",
+        title="📈 Custo Acumulado para Manter/Usar Cada Opção",
     )
     line_fig.update_traces(textposition="top center")
 
@@ -1227,6 +1260,7 @@ def main() -> None:
     # Graph for financed cars paid off amount
     financed_data = simulations[simulations["Valor financiado"] > 0].copy()
     if not financed_data.empty:
+        st.markdown("**2️⃣ Montante Quitado do Financiamento** - Quanto do carro já foi pago (financiamentos apenas)")
         financed_data["Rotulo_quitado"] = financed_data["Valor quitado financiamento"].map(short_money)
         financed_fig = px.line(
             financed_data,
@@ -1235,22 +1269,24 @@ def main() -> None:
             color="Modelo",
             markers=True,
             text="Rotulo_quitado",
-            title="Montante quitado do carro novo (financiamento)",
+            title="📊 Montante Quitado do Carro Novo (Financiamento)",
         )
         financed_fig.update_traces(textposition="top center")
         st.plotly_chart(financed_fig, use_container_width=False, width=800, height=400)
 
+    st.markdown("**3️⃣ Custo Mensal Efetivo** - Custo total dividido pelos meses (para comparação fácil)")
     monthly_fig = px.bar(
         final,
         x="Modelo",
         y="Custo mensal efetivo",
         color="Modelo",
         text=final["Custo mensal efetivo"].map(monthly_money),
-        title="Custo mensal efetivo por modelo",
+        title="📊 Custo Mensal Efetivo por Modelo",
     )
     monthly_fig.update_traces(textposition="outside")
     st.plotly_chart(monthly_fig, use_container_width=False, width=800, height=400)
 
+    st.markdown("**4️⃣ Composição do Custo Total** - Veja qual categoria (combustível, seguro, etc.) consome mais de cada modelo")
     bar_data = breakdown.melt(id_vars="Modelo", var_name="Categoria", value_name="Custo")
     bar_data["Rotulo"] = bar_data.apply(lambda row: cost_label(row["Categoria"], row["Custo"]), axis=1)
     bar_fig = px.bar(
@@ -1259,7 +1295,7 @@ def main() -> None:
         y="Custo",
         color="Categoria",
         text="Rotulo",
-        title="Composicao do custo no horizonte",
+        title="💰 Composição do Custo Total no Período Analisado",
     )
     bar_fig.update_traces(textposition="inside", insidetextanchor="middle")
     totals = breakdown.set_index("Modelo")[cost_columns].sum(axis=1).reset_index(name="Total")
@@ -1278,7 +1314,7 @@ def main() -> None:
     st.plotly_chart(bar_fig, use_container_width=False, width=800, height=400)
 
     # Novo gráfico: Depreciação estimada dos carros
-    st.subheader("Depreciacao estimada dos carros")
+    st.subheader("📉 Depreciação Estimada dos Veículos")
     depreciation_data = []
     for car in cars:
         if car.pagamento != "Assinatura":
@@ -1302,16 +1338,17 @@ def main() -> None:
             color="Modelo",
             markers=True,
             text="Rotulo",
-            title="Valor estimado do carro apos depreciacao (15% a.a.)",
+            title="📉 Valor Estimado do Veículo Após Depreciação (15% a.a.)",
         )
         dep_fig.update_traces(textposition="top center")
         st.plotly_chart(dep_fig, use_container_width=False, width=800, height=400)
     else:
-        st.info("Nenhum carro com depreciacao para mostrar (apenas assinaturas).")
+        st.info("ℹ️ Não há carros com depreciação para exibir (apenas assinaturas não depreciam).")
 
-    st.subheader("Curva de ponto de virada")
+    st.subheader("📈 Curva de Ponto de Virada (Break-Even)")
+    st.caption("Explore como mudanças de preço e consumo afetariam a decisão. Valores em vermelho (negativos) = mais econômico que o carro atual.")
     target_options = {f"{car.nome} ({car.id})": car for car in cars if car.id != current.id}
-    target_label = st.selectbox("Modelo para testar contra o carro atual", list(target_options))
+    target_label = st.selectbox("🔍 Modelo para Testar contra o Carro Atual", list(target_options), help="Selecione um modelo alternativo para explorar qual preço/consumo o tornaria mais econômico.")
     target = target_options[target_label]
     surface = make_break_even(current, target, investment_return)
     unit = "km/kWh" if target.tipo == "Eletrico" else "km/l"
@@ -1335,8 +1372,8 @@ def main() -> None:
         )
     )
     fig.update_layout(
-        title=f"Preco e consumo que fariam {target.nome} bater {current.nome}",
-        xaxis_title="Valor do carro",
+        title=f"📈 Preço e Consumo que Fariam {target.nome} Bater {current.nome}",
+        xaxis_title="Preço do Veículo (R$)",
         yaxis_title=f"Consumo ({unit})",
     )
     st.plotly_chart(fig, use_container_width=True)
