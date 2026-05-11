@@ -3,3 +3,5 @@ pandas>=2.2
 numpy>=1.26
 plotly>=5.20
 matplotlib>=3.8
+kaleido
+reportlab
