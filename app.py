@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 import json
+from datetime import datetime
+import os
 
 import numpy as np
 import pandas as pd
@@ -65,6 +67,7 @@ SIMULATIONS_DIR.mkdir(exist_ok=True)
 
 def save_simulation(name, ipva_default, horizon, investment_return, cars):
     data = {
+        "timestamp": datetime.now().isoformat(),
         "ipva_default": ipva_default,
         "horizon": horizon,
         "investment_return": investment_return,
@@ -81,13 +84,117 @@ def load_simulation(name):
     return data["ipva_default"], data["horizon"], data["investment_return"], cars
 
 
+def get_simulations_metadata():
+    """Retorna lista de simulações com timestamp, modelos e dados principais."""
+    simulations = []
+    for filepath in sorted(SIMULATIONS_DIR.glob("*.json"), key=lambda x: os.path.getmtime(x), reverse=True):
+        if filepath.stem.endswith("_DRAFT") or filepath.stem.startswith("_AUTO_"):
+            continue
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            cars_data = data.get("cars", [])
+            model_names = [car.get("nome", "?") for car in cars_data]
+            
+            # Calcular dados principais de cada modelo
+            models_info = []
+            for car in cars_data:
+                current_value = car.get("valor_base", 0)
+                if car.get("carro_atual"):
+                    current_value = car.get("valor_base", 0)
+                
+                # Calcular custo mensal aproximado (simplificado)
+                monthly_cost = (
+                    (current_value * car.get("ipva_percentual", 0) / 100 / 12) +
+                    (car.get("seguro_anual", 0) / 12) +
+                    (car.get("licenciamento_anual", 0) / 12) +
+                    (car.get("manutencao_anual", 0) / 12) +
+                    (car.get("pneus_anual", 0) / 12) +
+                    (car.get("estacionamento_anual", 0) / 12) +
+                    (car.get("outros_anuais", 0) / 12)
+                )
+                
+                # Se é assinatura, adicionar valor da assinatura
+                if car.get("pagamento") == "Assinatura":
+                    monthly_cost = car.get("assinatura_mensal", 0)
+                
+                # Se é financiado, calcular parcela
+                if car.get("pagamento") == "Financiado":
+                    principal = max(car.get("valor_base", 0) - car.get("entrada_extra", 0), 0)
+                    monthly_rate = car.get("taxa_juros_am", 0) / 100
+                    months = car.get("prazo_meses", 1)
+                    if principal > 0 and monthly_rate > 0 and months > 0:
+                        parcela = principal * (monthly_rate * (1 + monthly_rate) ** months) / ((1 + monthly_rate) ** months - 1)
+                    else:
+                        parcela = principal / max(months, 1) if months > 0 else 0
+                    monthly_cost += parcela
+                
+                models_info.append({
+                    "nome": car.get("nome", "?"),
+                    "custo_mensal": monthly_cost,
+                    "tipo": car.get("tipo", "?"),
+                    "valor_base": car.get("valor_base", 0),
+                })
+            
+            timestamp_str = data.get("timestamp", "")
+            if timestamp_str:
+                try:
+                    dt = datetime.fromisoformat(timestamp_str)
+                    formatted_time = dt.strftime("%d/%m/%Y %H:%M")
+                except:
+                    formatted_time = "Data desconhecida"
+            else:
+                formatted_time = "Data desconhecida"
+            
+            simulations.append({
+                "filename": filepath.stem,
+                "models": model_names,
+                "models_info": models_info,
+                "timestamp": formatted_time,
+                "datetime_obj": datetime.fromisoformat(timestamp_str) if timestamp_str else None,
+            })
+        except Exception:
+            continue
+    
+    return simulations
+
+
 def list_simulations():
     return [f.stem for f in SIMULATIONS_DIR.glob("*.json") if not f.stem.endswith("_DRAFT")]
 
 
+def format_simulation_title(models):
+    """Formata título com todos os modelos sem abreviar."""
+    return " vs ".join(models)
+
+
 def save_draft(ipva_default, horizon, investment_return, cars):
+    """Salva rascunho. Cria arquivo numerado apenas após 1 hora sem alterações."""
     try:
+        # Sempre salva o DRAFT atual
         save_simulation("_DRAFT", ipva_default, horizon, investment_return, cars)
+        
+        # Verifica se deve criar um novo arquivo (a cada 1 hora)
+        if "last_auto_save_time" not in st.session_state:
+            st.session_state.last_auto_save_time = datetime.now()
+        
+        current_time = datetime.now()
+        time_elapsed = (current_time - st.session_state.last_auto_save_time).total_seconds()
+        
+        # Se passaram 1 hora (3600 segundos), salva como arquivo numerado
+        if time_elapsed >= 3600:
+            # Encontra o próximo número disponível
+            existing_autos = list(SIMULATIONS_DIR.glob("_AUTO_*.json"))
+            auto_number = len(existing_autos) + 1
+            
+            # Gera nome com modelos para contexto
+            model_names = [car.get("nome", "?") for car in [car.__dict__ if hasattr(car, '__dict__') else car for car in cars]]
+            model_str = "_".join(model_names).replace(" ", "_")[:50]  # Limita a 50 chars
+            timestamp = current_time.strftime("%Y%m%d_%H%M%S")
+            
+            auto_name = f"_AUTO_{auto_number}_{model_str}_{timestamp}"
+            save_simulation(auto_name, ipva_default, horizon, investment_return, cars)
+            st.session_state.last_auto_save_time = current_time
     except Exception:
         pass
 
@@ -486,6 +593,45 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
     )
 
 
+def display_recent_simulations():
+    """Exibe simulações recentes em lista vertical com opção de carregar."""
+    simulations = get_simulations_metadata()
+    
+    if not simulations:
+        return None
+    
+    st.subheader("⏱️ Últimas Simulações")
+    
+    # Mostrar as últimas 15 simulações em lista vertical
+    recent = simulations[:15]
+    
+    for sim in recent:
+        # Criar um expander para cada simulação
+        models_display = format_simulation_title(sim['models'])
+        
+        with st.expander(f"📅 {sim['timestamp']} • {models_display}", expanded=False):
+            # Botão para carregar
+            if st.button(
+                "📂 Carregar Simulação",
+                key=f"load_recent_{sim['filename']}",
+                use_container_width=True
+            ):
+                try:
+                    ipva_default, horizon, investment_return, cars_temp = load_simulation(sim['filename'])
+                    st.session_state.ipva_default = ipva_default
+                    st.session_state.horizon = horizon
+                    st.session_state.investment_return = investment_return
+                    st.session_state.cars = cars_temp
+                    st.session_state.draft_restored = True
+                    st.success(f"✅ Simulação carregada!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Erro ao carregar: {e}")
+    
+    st.divider()
+    return True
+
+
 def make_break_even(current: CarInputs, target: CarInputs, investment_return: float) -> pd.DataFrame:
     """Gera malha de preços e consumos para calcular diferença no custo anual médio."""
     target_prices = np.linspace(max(target.valor_base * 0.6, 10_000), target.valor_base * 1.4, 30)
@@ -533,6 +679,9 @@ def main():
         st.session_state.cars = cars_d
         st.session_state.draft_restored = True
         st.info("✅ Rascunho restaurado.")
+
+    # Exibir simulações recentes
+    display_recent_simulations()
 
     ipva_default_val = st.session_state.get("ipva_default", 4.0)
     horizon_val = st.session_state.get("horizon", 3)
