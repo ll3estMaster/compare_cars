@@ -59,6 +59,7 @@ class CarInputs:
     outros_anuais: float
     horizonte_anos: int
     depreciation_factor: float = 15.0
+    valor_carro_atual_trade_in: float = 0.0
 
 
 SIMULATIONS_DIR = Path("simulacoes")
@@ -80,7 +81,12 @@ def save_simulation(name, ipva_default, horizon, investment_return, cars):
 def load_simulation(name):
     with open(SIMULATIONS_DIR / f"{name}.json", "r", encoding="utf-8") as f:
         data = json.load(f)
-    cars = [CarInputs(**car_data) for car_data in data["cars"]]
+    cars = []
+    for car_data in data["cars"]:
+        # Garantir compatibilidade com simulações antigas (sem valor_carro_atual_trade_in)
+        if "valor_carro_atual_trade_in" not in car_data:
+            car_data["valor_carro_atual_trade_in"] = 0.0
+        cars.append(CarInputs(**car_data))
     return data["ipva_default"], data["horizon"], data["investment_return"], cars
 
 
@@ -300,12 +306,16 @@ def financing_schedule_by_year(car: CarInputs) -> list[dict[str, float]]:
 
 
 def simulate_car(car: CarInputs, current_value: float, investment_return: float) -> pd.DataFrame:
+    # Usar trade_in específico do modelo se definido, caso contrário usar current_value
+    trade_in_value = getattr(car, 'valor_carro_atual_trade_in', 0.0)
+    trade_in_value = trade_in_value if trade_in_value > 0 else current_value
+    
     if car.carro_atual:
         additional_capital = 0.0
     elif car.pagamento == "A vista":
-        additional_capital = max(0.0, car.valor_base - current_value)
+        additional_capital = max(0.0, car.valor_base - trade_in_value)
     elif car.pagamento == "Financiado":
-        additional_capital = max(0.0, car.entrada_extra - current_value)
+        additional_capital = max(0.0, car.entrada_extra - trade_in_value)
     else:
         additional_capital = 0.0
 
@@ -423,12 +433,23 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
     d_assinatura_m = default_car.assinatura_mensal if default_car else 3500.0
     d_assinatura_tx = default_car.taxa_inicial_assinatura if default_car else 0.0
     d_depr = default_car.depreciation_factor if default_car else 15.0
+    d_trade_in = getattr(default_car, 'valor_carro_atual_trade_in', 0.0) if default_car else (current_value if current_value else 0.0)
 
     with st.expander(label, expanded=index <= 2):
         col1, col2, col3 = st.columns(3)
 
         with col1:
             nome = st.text_input("🚗 Nome/Modelo", d_nome, key=f"name_{index}")
+            
+            # Trade-in input apenas para modelos alternativos
+            trade_in = 0.0
+            if not current:
+                trade_in = st.number_input(
+                    "💰 Valor de troca do seu carro atual (proposta)",
+                    0.0, 2_000_000.0, d_trade_in, 1000.0, key=f"trade_in_{index}")
+                if current_value:
+                    st.caption(f"Padrão (seu carro): {money(current_value)}")
+            
             if not current:
                 pagamento = st.selectbox("💳 Forma de Pagamento", ["A vista", "Financiado", "Assinatura"],
                                          index=["A vista", "Financiado", "Assinatura"].index(d_pagamento),
@@ -548,19 +569,21 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
             st.info(f"📊 **Média anual de revisões no período: {money(media_revisoes)}**")
 
         # Message about additional capital needed
-        if not current and current_value is not None:
+        if not current:
+            # Usar trade_in específico do modelo ao invés de current_value
+            trade_in_valor = trade_in if trade_in > 0 else (current_value if current_value else 0.0)
             if pagamento == "A vista":
-                cap_adicional = max(0.0, valor_base - current_value)
+                cap_adicional = max(0.0, valor_base - trade_in_valor)
             elif pagamento == "Financiado":
-                cap_adicional = max(0.0, entrada_extra - current_value)
+                cap_adicional = max(0.0, entrada_extra - trade_in_valor)
             else:
                 cap_adicional = 0.0
 
             if cap_adicional > 0:
                 st.warning(f"💸 **Capital Adicional Necessário: {money(cap_adicional)}**\n\n"
-                           f"Esse valor precisará ser desembolsado (além do valor do seu carro atual) e gerará um custo de oportunidade anual de {investment_return:.1f}%.")
+                           f"Esse valor precisará ser desembolsado (além da troca do seu carro) e gerará um custo de oportunidade anual de {investment_return:.1f}%.")
             else:
-                st.success("✅ **Nenhum capital adicional necessário** (o valor do seu carro atual cobre o desembolso).")
+                st.success("✅ **Nenhum capital adicional necessário** (a proposta de troca cobre o desembolso).")
 
     return CarInputs(
         id=f"car_{index}",
@@ -590,6 +613,7 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
         outros_anuais=outros,
         horizonte_anos=horizon,
         depreciation_factor=depr,
+        valor_carro_atual_trade_in=trade_in,
     )
 
 
@@ -783,15 +807,21 @@ def main():
     for car in cars:
         if car.carro_atual:
             cap_adicional = 0.0
-        elif car.pagamento == "A vista":
-            cap_adicional = max(0.0, car.valor_base - current.valor_base)
-        elif car.pagamento == "Financiado":
-            cap_adicional = max(0.0, car.entrada_extra - current.valor_base)
+            trade_in_value = 0.0
         else:
-            cap_adicional = 0.0
+            # Usar trade_in específico do modelo se definido, caso contrário usar valor do carro atual
+            trade_in_value = getattr(car, 'valor_carro_atual_trade_in', 0.0)
+            trade_in_value = trade_in_value if trade_in_value > 0 else current.valor_base
+            if car.pagamento == "A vista":
+                cap_adicional = max(0.0, car.valor_base - trade_in_value)
+            elif car.pagamento == "Financiado":
+                cap_adicional = max(0.0, car.entrada_extra - trade_in_value)
+            else:
+                cap_adicional = 0.0
         first_year_opp = cap_adicional * investment_return / 100
         opp_data.append({
             "Modelo": car.nome,
+            "Valor de Troca": trade_in_value,
             "Capital Adicional": cap_adicional,
             "Taxa de Retorno": f"{investment_return:.1f}%",
             "Custo Oport. (1º ano)": first_year_opp,
@@ -1061,7 +1091,7 @@ def main():
                 story.append(model_table)
                 story.append(Spacer(1, 0.5*cm))
 
-                # Inputs detalhados por carro
+                # Inputs detalhados por carro (incluindo valor de troca do carro atual)
                 story.append(Paragraph("Dados Completos de Entrada", heading_style))
                 for car in cars:
                     story.append(Paragraph(f"<b>{car.nome}</b>", styles["Heading3"]))
@@ -1070,15 +1100,45 @@ def main():
                         ["Forma de pagamento", car.pagamento],
                         ["Valor base", money(car.valor_base)],
                         ["Km/mês", f"{car.km_mes:.0f}"],
-                        ["IPVA (%)", f"{car.ipva_percentual:.1f}%" if car.pagamento != "Assinatura" else "Incluso"],
-                        ["Seguro anual", money(car.seguro_anual) if car.pagamento != "Assinatura" else "Incluso"],
-                        ["Licenciamento anual", money(car.licenciamento_anual) if car.pagamento != "Assinatura" else "Incluso"],
-                        ["Manutenção anual", money(car.manutencao_anual) if car.pagamento != "Assinatura" else "Incluso"],
-                        ["Pneus anual", money(car.pneus_anual) if car.pagamento != "Assinatura" else "Incluso"],
-                        ["Estacionamento anual", money(car.estacionamento_anual)],
-                        ["Outros anuais", money(car.outros_anuais)],
-                        ["Revisões médias anuais", money(sum(car.revisoes_anuais)/len(car.revisoes_anuais)) if car.pagamento != "Assinatura" else "Incluso"],
                     ]
+                    
+                    # --- INFORMAÇÃO SOBRE VALOR DE TROCA (TRADE-IN) ---
+                    if car.carro_atual:
+                        # Para o carro atual, mostra seu valor de mercado (base para troca)
+                        params.append(["Valor do seu carro atual", money(car.valor_base)])
+                    else:
+                        # Para modelo alternativo, mostra o valor oferecido pelo seu carro atual
+                        trade_offer = getattr(car, 'valor_carro_atual_trade_in', 0.0)
+                        if trade_offer == 0.0:
+                            # Se não definido (simulação antiga), assume o valor do carro atual como padrão
+                            trade_offer = current.valor_base
+                            params.append(["Valor oferecido pelo seu carro", money(trade_offer)])
+                        else:
+                            params.append(["Valor oferecido pelo seu carro", money(trade_offer)])
+                        
+                        # Capital adicional necessário
+                        if car.pagamento == "A vista":
+                            cap_adicional = max(0.0, car.valor_base - trade_offer)
+                        elif car.pagamento == "Financiado":
+                            cap_adicional = max(0.0, car.entrada_extra - trade_offer)
+                        else:
+                            cap_adicional = 0.0
+                        params.append(["Capital adicional necessário", money(cap_adicional) if cap_adicional > 0 else "Nenhum"])
+                    
+                    # IPVA, seguro, etc.
+                    params.append(["IPVA (%)", f"{car.ipva_percentual:.1f}%" if car.pagamento != "Assinatura" else "Incluso"])
+                    params.append(["Seguro anual", money(car.seguro_anual) if car.pagamento != "Assinatura" else "Incluso"])
+                    params.append(["Licenciamento anual", money(car.licenciamento_anual) if car.pagamento != "Assinatura" else "Incluso"])
+                    params.append(["Manutenção anual", money(car.manutencao_anual) if car.pagamento != "Assinatura" else "Incluso"])
+                    params.append(["Pneus anual", money(car.pneus_anual) if car.pagamento != "Assinatura" else "Incluso"])
+                    params.append(["Estacionamento anual", money(car.estacionamento_anual)])
+                    params.append(["Outros anuais", money(car.outros_anuais)])
+                    if car.pagamento != "Assinatura":
+                        media_rev = sum(car.revisoes_anuais)/len(car.revisoes_anuais) if car.revisoes_anuais else 0
+                        params.append(["Revisões médias anuais", money(media_rev)])
+                    else:
+                        params.append(["Revisões médias anuais", "Incluso"])
+
                     if car.tipo == "Combustao":
                         params.append(["Consumo", f"{car.consumo_km_l:.1f} km/l"])
                         params.append(["Preço combustível", money(car.preco_combustivel)+"/l"])
@@ -1103,6 +1163,7 @@ def main():
                     if car.pagamento != "Assinatura":
                         params.append(["Depreciação anual", f"{car.depreciation_factor:.1f}%"])
 
+                    # Montagem da tabela de parâmetros
                     param_table_data = [[params[i][0], params[i][1]] for i in range(len(params))]
                     param_table = Table(param_table_data, colWidths=[5*cm, 5*cm])
                     param_table.setStyle(TableStyle([
@@ -1182,7 +1243,6 @@ def main():
 
                 story.append(detail_table)
                 story.append(PageBreak())
-
 
                 # Gráficos
                 story.append(Paragraph("Gráficos da Análise", heading_style))
