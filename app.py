@@ -1,4 +1,4 @@
- # Title: Compare Car V1.00
+# Title: Compare Car V1.00
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -1156,4 +1156,357 @@ def main():
                 fig2_pdf.update_layout(
                     height=540,
                     width=900,
-       
+                    margin=dict(t=150),
+                    title=dict(y=0.94, x=0.5, xanchor="center"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.12, xanchor="center", x=0.5),
+                )
+
+                dep_data_pdf = []
+                for car in cars:
+                    if car.pagamento != "Assinatura":
+                        rate = car.depreciation_factor / 100
+                        val = car.valor_base if not car.carro_atual else current.valor_base
+                        for y in range(1, horizon + 1):
+                            dep_data_pdf.append({"Modelo": car.nome, "Ano": y, "Valor": val * (1 - rate) ** y})
+                if dep_data_pdf:
+                    dep_df_pdf = pd.DataFrame(dep_data_pdf)
+                    fig3_pdf = px.line(dep_df_pdf, x="Ano", y="Valor", color="Modelo", markers=True,
+                                      title="Evolução do valor do veículo",
+                                      color_discrete_sequence=custom_palette)
+                    fig3_pdf.update_layout(height=450, width=800)
+                else:
+                    fig3_pdf = None
+
+                def fig_to_image(fig, width=800):
+                    if fig is None:
+                        return None
+                    try:
+                        img_bytes = pio.to_image(fig, format="png", width=width, scale=2)
+                        return img_bytes
+                    except Exception as e:
+                        st.error(f"Erro ao converter gráfico para imagem: {e}")
+                        return None
+
+                img1 = fig_to_image(fig1_pdf)
+                img2 = fig_to_image(fig2_pdf)
+                img3 = fig_to_image(fig3_pdf) if fig3_pdf else None
+
+                # Break-even plots
+                be_images = []
+                for other in other_cars:
+                    be_df = make_break_even(winner_car, other, investment_return)
+                    unit = "km/kWh" if other.tipo == "Eletrico" else "km/l"
+                    fig_be = go.Figure(data=go.Contour(
+                        x=be_df["Valor do carro"],
+                        y=be_df["Consumo"],
+                        z=be_df["Diferenca anual vs atual"],
+                        colorscale="RdYlGn_r",
+                        contours=dict(showlabels=True),
+                        colorbar=dict(title="Diferença anual (R$)"),
+                    ))
+                    fig_be.add_trace(go.Scatter(
+                        x=[other.valor_base],
+                        y=[other.consumo_km_kwh if other.tipo == "Eletrico" else other.consumo_km_l],
+                        mode="markers",
+                        marker=dict(size=14, color="black", symbol="x"),
+                        name=f"{other.nome} atual",
+                    ))
+                    fig_be.update_layout(
+                        title=f"Break‑even: {other.nome} vs {winner_car.nome}",
+                        xaxis_title="Preço do veículo (R$)",
+                        yaxis_title=f"Consumo ({unit})",
+                        height=500,
+                        width=800,
+                    )
+                    be_img = fig_to_image(fig_be, width=800)
+                    if be_img:
+                        be_images.append((other.nome, be_img))
+
+                # Construir PDF
+                pdf_buffer = io.BytesIO()
+                doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, topMargin=1.5*cm, bottomMargin=1.5*cm)
+                styles = getSampleStyleSheet()
+                title_style = styles["Title"]
+                heading_style = styles["Heading2"]
+                normal_style = styles["Normal"]
+
+                story = []
+
+                def add_kv_section(title, rows, col_widths=(6 * cm, 10 * cm)):
+                    story.append(Paragraph(title, styles["Heading3"]))
+                    if not rows:
+                        story.append(Paragraph("Sem dados para exibir.", normal_style))
+                        story.append(Spacer(1, 0.2 * cm))
+                        return
+                    table = Table([[k, v] for k, v in rows], colWidths=list(col_widths))
+                    table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, -1), colors.lightgrey),
+                        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                    ]))
+                    story.append(table)
+                    story.append(Spacer(1, 0.3 * cm))
+
+                # Título
+                story.append(Paragraph("Relatório de Comparação de Custos de Veículos", title_style))
+                story.append(Spacer(1, 0.5*cm))
+
+                # Premissas
+                story.append(Paragraph("Premissas Gerais", heading_style))
+                story.append(Paragraph(f"Estado para IPVA padrão: {state} (alíquota {ipva_default:.1f}%)", normal_style))
+                story.append(Paragraph(f"Período de análise: {horizon} anos", normal_style))
+                story.append(Paragraph(f"Retorno esperado de investimentos: {investment_return:.1f}% a.a.", normal_style))
+                story.append(Spacer(1, 0.5*cm))
+
+                # Tabela de modelos comparados
+                story.append(Paragraph("Modelos Analisados", heading_style))
+                model_table_data = [["Modelo", "Tipo", "Pagamento", "Valor (R$)", "Km/mês"]]
+                for car in cars:
+                    model_table_data.append([
+                        car.nome,
+                        car.tipo,
+                        car.pagamento,
+                        money(car.valor_base),
+                        f"{car.km_mes:.0f}"
+                    ])
+                model_table = Table(model_table_data, colWidths=[4*cm, 3*cm, 3.5*cm, 3.5*cm, 3*cm])
+                model_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.grey),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0,0), (-1,0), 10),
+                    ('BOTTOMPADDING', (0,0), (-1,0), 6),
+                    ('BACKGROUND', (0,1), (-1,-1), colors.beige),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ]))
+                story.append(model_table)
+                story.append(Spacer(1, 0.5*cm))
+
+                # Inputs detalhados por carro (incluindo valor de troca do carro atual)
+                story.append(Paragraph("Dados Completos de Entrada", heading_style))
+                for car in cars:
+                    story.append(Paragraph(f"<b>{car.nome}</b>", styles["Heading3"]))
+                    main_rows = [
+                        ["Tipo", car.tipo],
+                        ["Forma de pagamento", car.pagamento],
+                        ["Valor base", money(car.valor_base)],
+                        ["Km/mês", f"{car.km_mes:.0f}"],
+                    ]
+                    if car.carro_atual:
+                        main_rows.append(["Valor do carro atual", money(car.valor_base)])
+                    else:
+                        trade_offer = getattr(car, "valor_carro_atual_trade_in", 0.0) or current.valor_base
+                        main_rows.append(["Valor oferecido pelo seu carro", money(trade_offer)])
+                        if car.pagamento == "A vista":
+                            cap_adicional = max(0.0, car.valor_base - trade_offer)
+                        elif car.pagamento == "Financiado":
+                            cap_adicional = max(0.0, car.entrada_extra - trade_offer)
+                        else:
+                            cap_adicional = 0.0
+                        main_rows.append(["Capital adicional necessário", money(cap_adicional) if cap_adicional > 0 else "Nenhum"])
+                    add_kv_section("Dados principais", main_rows)
+
+                    usage_rows = []
+                    if car.tipo == "Combustao":
+                        usage_rows = [
+                            ["Consumo", f"{car.consumo_km_l:.1f} km/l"],
+                            ["Preço combustível", money(car.preco_combustivel) + "/l"],
+                        ]
+                    elif car.tipo == "Eletrico":
+                        usage_rows = [
+                            ["Consumo", f"{car.consumo_km_kwh:.1f} km/kWh"],
+                            ["Preço energia", money(car.preco_kwh) + "/kWh"],
+                        ]
+                    else:
+                        usage_rows = [
+                            ["Consumo gasolina", f"{car.consumo_km_l:.1f} km/l"],
+                            ["Preço gasolina", money(car.preco_combustivel) + "/l"],
+                            ["Recarga externa", f"{car.percentual_recarga_externa:.0f}%"],
+                            ["Consumo elétrico", f"{car.consumo_km_kwh:.1f} km/kWh"],
+                            ["Preço energia", money(car.preco_kwh) + "/kWh"],
+                        ]
+                    add_kv_section("Uso e energia", usage_rows)
+
+                    contract_rows = []
+                    if car.pagamento == "Financiado":
+                        parcela = monthly_payment(max(car.valor_base - car.entrada_extra, 0.0), car.taxa_juros_am / 100, car.prazo_meses)
+                        contract_rows = [
+                            ["Entrada extra", money(car.entrada_extra)],
+                            ["Taxa juros mensal", f"{car.taxa_juros_am:.2f}%"],
+                            ["Prazo (meses)", f"{car.prazo_meses}"],
+                            ["Parcela estimada", monthly_money(parcela)],
+                            ["Depreciação anual", f"{car.depreciation_factor:.1f}%"],
+                        ]
+                    elif car.pagamento == "Assinatura":
+                        contract_rows = [
+                            ["Assinatura mensal", money(car.assinatura_mensal)],
+                            ["Taxa inicial", money(car.taxa_inicial_assinatura)],
+                            ["IPVA / seguro / licenciamento", "Inclusos"],
+                            ["Manutenção e pneus", "Inclusos"],
+                        ]
+                    else:
+                        contract_rows = [["Depreciação anual", f"{car.depreciation_factor:.1f}%"]]
+                    add_kv_section("Compra e contratação", contract_rows)
+
+                    annual_rows = []
+                    if car.pagamento == "Assinatura":
+                        annual_rows = [
+                            ["IPVA", "Incluso"],
+                            ["Seguro anual", "Incluso"],
+                            ["Licenciamento anual", "Incluso"],
+                            ["Manutenção anual", "Incluso"],
+                            ["Pneus anual", "Incluso"],
+                            ["Estacionamento anual", money(car.estacionamento_anual)],
+                            ["Outros anuais", money(car.outros_anuais)],
+                            ["Revisões médias anuais", "Inclusas"],
+                        ]
+                    else:
+                        media_rev = sum(car.revisoes_anuais) / len(car.revisoes_anuais) if car.revisoes_anuais else 0
+                        annual_rows = [
+                            ["IPVA (%)", f"{car.ipva_percentual:.1f}%"],
+                            ["Seguro anual", money(car.seguro_anual)],
+                            ["Licenciamento anual", money(car.licenciamento_anual)],
+                            ["Manutenção anual", money(car.manutencao_anual)],
+                            ["Pneus anual", money(car.pneus_anual)],
+                            ["Estacionamento anual", money(car.estacionamento_anual)],
+                            ["Outros anuais", money(car.outros_anuais)],
+                            ["Revisões médias anuais", money(media_rev)],
+                        ]
+                    add_kv_section("Custos anuais", annual_rows)
+                story.append(PageBreak())
+
+                # Resultados: tabelas
+                story.append(Paragraph("Resultados da Simulação", heading_style))
+                story.append(Paragraph("Resumo do custo de oportunidade", heading_style))
+                opp_summary = opp_df[[
+                    "Modelo",
+                    "Capital Adicional",
+                    "Custo Oport. Total no Período",
+                    "Custo Oport. Médio Anual",
+                    "Custo Oport. Médio Mensal",
+                ]].copy()
+                for col in opp_summary.columns[1:]:
+                    opp_summary[col] = opp_summary[col].apply(money)
+                opp_summary_data = [list(opp_summary.columns)] + opp_summary.values.tolist()
+                opp_summary_table = Table(opp_summary_data, repeatRows=1, colWidths=[4 * cm, 3.5 * cm, 4 * cm, 3.5 * cm, 3.5 * cm])
+                opp_summary_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.grey),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                    ('FONTSIZE', (0,0), (-1,-1), 7),
+                ]))
+                story.append(opp_summary_table)
+                story.append(Spacer(1, 0.4*cm))
+
+                story.append(Paragraph("Custo Anual Médio e Mensal", heading_style))
+                comp_data = [["Modelo", "Custo Total Anual Médio", "Custo Mensal Médio"]]
+                for _, row in annual_avg.iterrows():
+                    comp_data.append([row["Modelo"], money(row["Custo total anual"]), money(row["Custo mensal médio"])])
+                comp_table = Table(comp_data, colWidths=[4*cm, 4*cm, 4*cm])
+                comp_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.grey), ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ]))
+                story.append(comp_table)
+                story.append(Spacer(1, 0.5*cm))
+
+                story.append(Paragraph("Detalhamento dos Custos Médios Anuais", heading_style))
+
+                # Prepara os dados da tabela
+                detailed_display = detailed.copy()
+                for col in detailed_display.columns[1:]:
+                    detailed_display[col] = detailed_display[col].apply(money)
+
+                # Quebrar cabeçalhos em múltiplas linhas manualmente
+                header_mapping = {
+                    "Modelo": "Modelo",
+                    "Custo total anual": "Custo total\nanual",
+                    "Custo mensal médio": "Custo mensal\nmédio",
+                    "Combustível/energia": "Combustível/\nenergia",
+                    "IPVA": "IPVA",
+                    "Licenciamento": "Licenciamento",
+                    "Seguro": "Seguro",
+                    "Revisões (média anual)": "Revisões\n(média anual)",
+                    "Manutenção": "Manutenção",
+                    "Pneus": "Pneus",
+                    "Estacionamento": "Estacionamento",
+                    "Outros": "Outros",
+                    "Assinatura": "Assinatura",
+                    "Custo de oportunidade": "Custo de\noportunidade\nmédio",
+                    "Juros financiamento": "Juros\nfinanciamento",
+                }
+
+                headers = [header_mapping.get(col, col) for col in detailed_display.columns]
+                detailed_data = [headers] + detailed_display.values.tolist()
+
+                # Largura total útil em A4 retrato (21cm - margens de 1.5cm cada = 18cm)
+                available_width = 18 * cm
+                num_cols = len(detailed_display.columns)
+                col_width = available_width / num_cols
+
+                # Cria a tabela com larguras proporcionais
+                detail_table = Table(detailed_data, repeatRows=1, colWidths=[col_width] * num_cols)
+
+                # Estilo com fonte menor e centralizado
+                detail_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.grey),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                    ('FONTSIZE', (0,0), (-1,0), 5),           # cabeçalho com fonte 5
+                    ('FONTSIZE', (0,1), (-1,-1), 5),          # dados também 5
+                    ('GRID', (0,0), (-1,-1), 0.3, colors.grey),
+                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('LEFTPADDING', (0,0), (-1,-1), 1),
+                    ('RIGHTPADDING', (0,0), (-1,-1), 1),
+                    ('TOPPADDING', (0,0), (-1,-1), 1),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+                ]))
+
+                story.append(detail_table)
+                story.append(PageBreak())
+
+                # Gráficos
+                story.append(Paragraph("Gráficos da Análise", heading_style))
+                if img1:
+                    story.append(Paragraph("Custo Anual Médio por Modelo", styles["Heading3"]))
+                    story.append(Image(io.BytesIO(img1), width=16*cm, height=9*cm))
+                    story.append(Spacer(1, 0.5*cm))
+                if img2:
+                    story.append(Paragraph("Composição Média Anual dos Custos", styles["Heading3"]))
+                    story.append(Image(io.BytesIO(img2), width=18*cm, height=10*cm))
+                    story.append(Spacer(1, 0.5*cm))
+                if img3:
+                    story.append(Paragraph("Depreciação", styles["Heading3"]))
+                    story.append(Image(io.BytesIO(img3), width=16*cm, height=9*cm))
+                    story.append(Spacer(1, 0.5*cm))
+
+                # Break-even contra o vencedor
+                if be_images:
+                    story.append(PageBreak())
+                    story.append(Paragraph(f"Análise de Break‑even - {winner_car.nome} como referência", heading_style))
+                    for name, be_img in be_images:
+                        if be_img:
+                            story.append(Paragraph(f"<b>{name} vs {winner_car.nome}</b>", styles["Heading3"]))
+                            story.append(Image(io.BytesIO(be_img), width=16*cm, height=10*cm))
+                            story.append(Spacer(1, 0.5*cm))
+
+                # Finalizar PDF
+                doc.build(story)
+                pdf_bytes = pdf_buffer.getvalue()
+
+                st.download_button(
+                    label="⬇️ Baixar Relatório PDF",
+                    data=pdf_bytes,
+                    file_name="comparacao_veiculos.pdf",
+                    mime="application/pdf"
+                )
+                st.success("Relatório gerado com sucesso!")
+    else:
+        st.info("Instale as dependências acima para habilitar a geração de PDF.")
+
+if __name__ == "__main__":
+    main()
