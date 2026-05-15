@@ -1,4 +1,6 @@
-# Title: Compare Car V1.00
+
+
+# Title: Compare Car
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -61,12 +63,16 @@ class CarInputs:
     valor_carro_atual_trade_in: float = 0.0
 
 
+def display_car_name(car: CarInputs) -> str:
+    """Retorna o nome do carro com a forma de pagamento para exibição."""
+    return f"{car.nome} - {car.pagamento}"
+
+
 SIMULATIONS_DIR = Path("simulacoes")
 SIMULATIONS_DIR.mkdir(exist_ok=True)
 
 
 def is_visible_simulation_file(filepath: Path) -> bool:
-    """Filtra apenas simulações salvas manualmente pelo usuário."""
     return filepath.suffix == ".json" and not filepath.stem.endswith("_DRAFT") and not filepath.stem.startswith("_AUTO_")
 
 
@@ -87,15 +93,15 @@ def load_simulation(name):
         data = json.load(f)
     cars = []
     for car_data in data["cars"]:
-        # Garantir compatibilidade com simulações antigas (sem valor_carro_atual_trade_in)
         if "valor_carro_atual_trade_in" not in car_data:
             car_data["valor_carro_atual_trade_in"] = 0.0
+        if "depreciation_factor" not in car_data:
+            car_data["depreciation_factor"] = 15.0
         cars.append(CarInputs(**car_data))
     return data["ipva_default"], data["horizon"], data["investment_return"], cars
 
 
 def get_simulations_metadata():
-    """Retorna lista de simulações com timestamp, modelos e dados principais."""
     simulations = []
     for filepath in sorted(SIMULATIONS_DIR.glob("*.json"), key=lambda x: os.path.getmtime(x), reverse=True):
         if not is_visible_simulation_file(filepath):
@@ -104,16 +110,11 @@ def get_simulations_metadata():
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
             cars_data = data.get("cars", [])
-            model_names = [car.get("nome", "?") for car in cars_data]
-            
-            # Calcular dados principais de cada modelo
+            model_names = [f"{car.get('nome', '?')} - {car.get('pagamento', '?')}" for car in cars_data]
+
             models_info = []
             for car in cars_data:
                 current_value = car.get("valor_base", 0)
-                if car.get("carro_atual"):
-                    current_value = car.get("valor_base", 0)
-                
-                # Calcular custo mensal aproximado (simplificado)
                 monthly_cost = (
                     (current_value * car.get("ipva_percentual", 0) / 100 / 12) +
                     (car.get("seguro_anual", 0) / 12) +
@@ -123,12 +124,8 @@ def get_simulations_metadata():
                     (car.get("estacionamento_anual", 0) / 12) +
                     (car.get("outros_anuais", 0) / 12)
                 )
-                
-                # Se é assinatura, adicionar valor da assinatura
                 if car.get("pagamento") == "Assinatura":
                     monthly_cost = car.get("assinatura_mensal", 0)
-                
-                # Se é financiado, calcular parcela
                 if car.get("pagamento") == "Financiado":
                     principal = max(car.get("valor_base", 0) - car.get("entrada_extra", 0), 0)
                     monthly_rate = car.get("taxa_juros_am", 0) / 100
@@ -138,14 +135,13 @@ def get_simulations_metadata():
                     else:
                         parcela = principal / max(months, 1) if months > 0 else 0
                     monthly_cost += parcela
-                
                 models_info.append({
-                    "nome": car.get("nome", "?"),
+                    "nome": f"{car.get('nome', '?')} - {car.get('pagamento', '?')}",
                     "custo_mensal": monthly_cost,
                     "tipo": car.get("tipo", "?"),
                     "valor_base": car.get("valor_base", 0),
                 })
-            
+
             timestamp_str = data.get("timestamp", "")
             if timestamp_str:
                 try:
@@ -155,7 +151,7 @@ def get_simulations_metadata():
                     formatted_time = "Data desconhecida"
             else:
                 formatted_time = "Data desconhecida"
-            
+
             simulations.append({
                 "filename": filepath.stem,
                 "models": model_names,
@@ -165,7 +161,6 @@ def get_simulations_metadata():
             })
         except Exception:
             continue
-    
     return simulations
 
 
@@ -174,34 +169,22 @@ def list_simulations():
 
 
 def format_simulation_title(models):
-    """Formata título com todos os modelos sem abreviar."""
     return " vs ".join(models)
 
 
 def save_draft(ipva_default, horizon, investment_return, cars):
-    """Salva rascunho. Cria arquivo numerado apenas após 1 hora sem alterações."""
     try:
-        # Sempre salva o DRAFT atual
         save_simulation("_DRAFT", ipva_default, horizon, investment_return, cars)
-        
-        # Verifica se deve criar um novo arquivo (a cada 1 hora)
         if "last_auto_save_time" not in st.session_state:
             st.session_state.last_auto_save_time = datetime.now()
-        
         current_time = datetime.now()
         time_elapsed = (current_time - st.session_state.last_auto_save_time).total_seconds()
-        
-        # Se passaram 1 hora (3600 segundos), salva como arquivo numerado
         if time_elapsed >= 3600:
-            # Encontra o próximo número disponível
             existing_autos = list(SIMULATIONS_DIR.glob("_AUTO_*.json"))
             auto_number = len(existing_autos) + 1
-            
-            # Gera nome com modelos para contexto
-            model_names = [car.get("nome", "?") for car in [car.__dict__ if hasattr(car, '__dict__') else car for car in cars]]
-            model_str = "_".join(model_names).replace(" ", "_")[:50]  # Limita a 50 chars
+            model_names = [car.nome for car in cars]
+            model_str = "_".join(model_names).replace(" ", "_")[:50]
             timestamp = current_time.strftime("%Y%m%d_%H%M%S")
-            
             auto_name = f"_AUTO_{auto_number}_{model_str}_{timestamp}"
             save_simulation(auto_name, ipva_default, horizon, investment_return, cars)
             st.session_state.last_auto_save_time = current_time
@@ -224,22 +207,18 @@ def clear_draft():
 
 
 def set_reload_notice(message: str) -> None:
-    """Guarda um aviso persistente para orientar o usuário a dar F5."""
     st.session_state.reload_notice = message
 
 
 def render_reload_notice() -> None:
-    """Exibe o aviso persistente, se houver."""
     message = st.session_state.get("reload_notice")
     if message:
         st.warning(message)
 
 
 def copy_previous_car_state(index: int, source_car: CarInputs) -> None:
-    """Preenche o estado dos widgets do próximo modelo com os dados do modelo anterior."""
     trade_in = getattr(source_car, "valor_carro_atual_trade_in", 0.0)
     entry_pct = (source_car.entrada_extra / source_car.valor_base * 100) if source_car.valor_base > 0 else 0.0
-
     widget_values = {
         f"name_{index}": source_car.nome,
         f"type_{index}": source_car.tipo,
@@ -266,10 +245,8 @@ def copy_previous_car_state(index: int, source_car: CarInputs) -> None:
         f"park_{index}": source_car.estacionamento_anual,
         f"other_{index}": source_car.outros_anuais,
     }
-
     for key, value in widget_values.items():
         st.session_state[key] = value
-
     for y, rev in enumerate(source_car.revisoes_anuais, start=1):
         st.session_state[f"rev_{index}_{y}"] = rev
 
@@ -313,15 +290,12 @@ def financing_monthly_payment(car: CarInputs) -> float:
 def energy_cost(car: CarInputs) -> float:
     annual_km = car.km_mes * 12
     external_share = car.percentual_recarga_externa / 100 if car.tipo == "Hibrido" else 0
-
     if car.tipo == "Eletrico":
         return annual_km / max(car.consumo_km_kwh, 0.01) * car.preco_kwh
-
     if car.tipo == "Hibrido":
         gen_cost = annual_km * (1 - external_share) / max(car.consumo_km_l, 0.01) * car.preco_combustivel
         plug_cost = annual_km * external_share / max(car.consumo_km_kwh, 0.01) * car.preco_kwh
         return gen_cost + plug_cost
-
     return annual_km / max(car.consumo_km_l, 0.01) * car.preco_combustivel
 
 
@@ -332,12 +306,10 @@ def financing_schedule_by_year(car: CarInputs) -> list[dict[str, float]]:
     installment = monthly_payment(principal, monthly_rate, car.prazo_meses)
     balance = principal
     cumulative_amort = 0.0
-
     for year in range(1, car.horizonte_anos + 1):
         annual_payment = 0.0
         annual_interest = 0.0
         annual_amort = 0.0
-
         for month in range(1, 13):
             if (year - 1) * 12 + month > car.prazo_meses or balance <= 0:
                 break
@@ -348,7 +320,6 @@ def financing_schedule_by_year(car: CarInputs) -> list[dict[str, float]]:
             annual_payment += payment
             annual_interest += interest
             annual_amort += amort
-
         cumulative_amort += annual_amort
         schedule.append({
             "Juros financiamento": annual_interest,
@@ -356,42 +327,49 @@ def financing_schedule_by_year(car: CarInputs) -> list[dict[str, float]]:
             "Valor quitado financiamento": car.entrada_extra + cumulative_amort,
             "Saldo financiamento": balance,
         })
-
     return schedule
 
 
-def simulate_car(car: CarInputs, current_value: float, investment_return: float) -> pd.DataFrame:
-    # Usar trade_in específico do modelo se definido, caso contrário usar current_value
+def simulate_car(car: CarInputs, current_value: float, investment_return: float, fin_term_default: float = 24) -> pd.DataFrame:
     trade_in_value = getattr(car, 'valor_carro_atual_trade_in', 0.0)
     trade_in_value = trade_in_value if trade_in_value > 0 else current_value
-    
+
     if car.carro_atual:
         additional_capital = 0.0
+        opportunity_period_months = 0
     elif car.pagamento == "A vista":
         additional_capital = max(0.0, car.valor_base - trade_in_value)
+        opportunity_period_months = fin_term_default
     elif car.pagamento == "Financiado":
         additional_capital = max(0.0, car.entrada_extra - trade_in_value)
+        opportunity_period_months = car.prazo_meses
     else:
         additional_capital = 0.0
+        opportunity_period_months = 0
 
     rate = investment_return / 100
-    accumulated = additional_capital
-
+    opportunity_years = opportunity_period_months / 12.0
     schedule = financing_schedule_by_year(car)
 
     rows = []
+    remaining_years = opportunity_years
+    accumulated = additional_capital
+
     for year in range(1, car.horizonte_anos + 1):
-        annual_opportunity = accumulated * rate
-        accumulated *= (1 + rate)
+        if remaining_years > 0 and accumulated > 0:
+            fraction = min(1.0, remaining_years)
+            annual_opportunity = accumulated * ((1 + rate) ** fraction - 1)
+            accumulated *= (1 + rate) ** fraction
+            remaining_years -= fraction
+        else:
+            annual_opportunity = 0.0
 
         revision = car.revisoes_anuais[year - 1] if year <= len(car.revisoes_anuais) else 0
-
         subscription = (
             car.assinatura_mensal * 12 + (car.taxa_inicial_assinatura if year == 1 else 0)
             if car.pagamento == "Assinatura"
             else 0.0
         )
-
         ipva = 0.0 if car.pagamento == "Assinatura" else car.valor_base * car.ipva_percentual / 100
         lic = 0.0 if car.pagamento == "Assinatura" else car.licenciamento_anual
         seguro = 0.0 if car.pagamento == "Assinatura" else car.seguro_anual
@@ -403,12 +381,11 @@ def simulate_car(car: CarInputs, current_value: float, investment_return: float)
             energy_cost(car) + ipva + lic + seguro + rev + manut + pneus
             + car.estacionamento_anual + car.outros_anuais + subscription
         )
-
         fin_year = schedule[year - 1]
         total = operating + annual_opportunity + fin_year["Juros financiamento"]
 
         rows.append({
-            "Modelo": car.nome,
+            "Modelo": display_car_name(car),
             "ID": car.id,
             "Ano": year,
             "Combustível/energia": energy_cost(car),
@@ -426,11 +403,11 @@ def simulate_car(car: CarInputs, current_value: float, investment_return: float)
             "Custo operacional total": operating,
             "Custo total anual": total,
         })
-
     return pd.DataFrame(rows)
 
 
-def add_general_assumptions(ipva_default_val=4.0, horizon_val=3, investment_return_val=10.0):
+def add_general_assumptions(ipva_default_val=4.0, horizon_val=3, investment_return_val=10.0,
+                           fin_entry_pct_val=20.0, fin_rate_val=1.3, fin_term_val=24):
     st.subheader("📋 Premissas Gerais da Análise")
     col1, col2, col3 = st.columns(3)
 
@@ -446,25 +423,48 @@ def add_general_assumptions(ipva_default_val=4.0, horizon_val=3, investment_retu
         st.session_state.previous_state = state
 
     ipva_default = col1.number_input("📊 Alíquota Padrão de IPVA (% ao ano)", 0.0, 10.0,
-                                     st.session_state.ipva_default, 0.1)
+                                     st.session_state.ipva_default, 0.1,
+                                     help="Alíquota padrão de IPVA baseada no estado selecionado. "
+                                          "Aplicada a todos os modelos alternativos por padrão.")
     st.session_state.ipva_default = ipva_default
 
-    horizon = col2.slider("⏱️ Período de Análise (anos)", 1, 10, horizon_val)
+    horizon = col2.slider("⏱️ Período de Análise (anos)", 1, 10, horizon_val,
+                         help="Horizonte de tempo para a análise. Determina quantos anos de custos serão simulados.")
     investment_return = col3.number_input("💰 Retorno Esperado de Investimentos (% ao ano)", 0.0, 30.0,
                                           investment_return_val, 0.5,
                                           help="Rendimento que você obteria investindo o capital adicional. "
-                                               "Usado para calcular o custo de oportunidade com juros compostos.")
-    # Retornar também o estado
-    return state, ipva_default, horizon, investment_return
+                                               "Usado para calcular o custo de oportunidade com juros compostos (proporcional ao período).")
+
+    st.divider()
+    st.markdown("#### 💳 Condições Padrão de Financiamento")
+    st.caption("Valores padrão aplicados automaticamente quando 'Financiado' é selecionado. Personalizáveis por modelo.")
+    fin_cols = st.columns(3)
+    with fin_cols[0]:
+        fin_entry_pct = fin_cols[0].number_input("📈 Entrada Mínima (%)", 0.0, 100.0, fin_entry_pct_val, 5.0,
+                                                 help="Percentual mínimo de entrada para financiamento. Ex: 20% de entrada no valor do veículo.")
+    with fin_cols[1]:
+        fin_rate = fin_cols[1].number_input("📊 Taxa Padrão (% a.m.)", 0.0, 10.0, fin_rate_val, 0.05,
+                                            help="Taxa de juros mensal padrão. Ex: 1.3% a.m. é aproximadamente 16.8% a.a.")
+    with fin_cols[2]:
+        fin_term = fin_cols[2].number_input("⏱️ Prazo Padrão (meses)", 1, 120, fin_term_val, 1,
+                                            help="Prazo padrão do financiamento. Ex: 24 meses. "
+                                                 "Para 'À vista', usado para calcular custo de oportunidade.")
+    st.info(
+        f"**Resumo**: Entrada {fin_entry_pct:.0f}% | Taxa {fin_rate:.2f}% a.m. | Prazo {fin_term:.0f} meses\n\n"
+        f"Para modelos \"À vista\", o prazo de {fin_term:.0f} meses será usado para calcular o custo de oportunidade, "
+        f"representando quanto você teria ganho se tivesse investido o capital adicional nesse período (juros compostos)."
+    )
+    return state, ipva_default, horizon, investment_return, fin_entry_pct, fin_rate, fin_term
 
 
 def car_form(index: int, ipva_default: float, horizon: int, current_value: float | None = None,
              default_car: CarInputs | None = None, investment_return: float = 10.0,
-             previous_car: CarInputs | None = None) -> CarInputs:
+             previous_car: CarInputs | None = None,
+             fin_entry_pct_default: float = 20.0, fin_rate_default: float = 1.3,
+             fin_term_default: float = 24) -> CarInputs:
     current = index == 0
     label = "Carro atual" if current else f"Modelo {index}"
 
-    # defaults
     if st.session_state.pop(f"copy_from_{index}", False) and previous_car:
         copy_previous_car_state(index, previous_car)
 
@@ -487,15 +487,14 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
     d_preco_kwh = default_car.preco_kwh if default_car else (st.session_state.get(f"kwh_{index}", previous_car.preco_kwh if previous_car else 1.30))
     d_recarga = default_car.percentual_recarga_externa if default_car else (st.session_state.get(f"ext_{index}", previous_car.percentual_recarga_externa if previous_car else 0.0))
     d_entrada = default_car.entrada_extra if default_car else (previous_car.entrada_extra if previous_car else 0.0)
-    d_taxa = default_car.taxa_juros_am if default_car else (st.session_state.get(f"rate_{index}", previous_car.taxa_juros_am if previous_car else 1.3))
-    d_prazo = default_car.prazo_meses if default_car else (st.session_state.get(f"term_{index}", previous_car.prazo_meses if previous_car else 24))
+    d_taxa = default_car.taxa_juros_am if default_car else (st.session_state.get(f"rate_{index}", previous_car.taxa_juros_am if previous_car else fin_rate_default))
+    d_prazo = default_car.prazo_meses if default_car else (st.session_state.get(f"term_{index}", previous_car.prazo_meses if previous_car else int(fin_term_default)))
     d_assinatura_m = default_car.assinatura_mensal if default_car else (st.session_state.get(f"sub_m_{index}", previous_car.assinatura_mensal if previous_car else 3500.0))
     d_assinatura_tx = default_car.taxa_inicial_assinatura if default_car else (st.session_state.get(f"sub_fee_{index}", previous_car.taxa_inicial_assinatura if previous_car else 0.0))
     d_depr = default_car.depreciation_factor if default_car else (st.session_state.get(f"depr_{index}", previous_car.depreciation_factor if previous_car else 15.0))
     d_trade_in = getattr(default_car, 'valor_carro_atual_trade_in', 0.0) if default_car else (st.session_state.get(f"trade_in_{index}", getattr(previous_car, 'valor_carro_atual_trade_in', 0.0) if previous_car else (current_value if current_value else 0.0)))
 
     with st.expander(label, expanded=index <= 2):
-        # Botão para copiar do modelo anterior (apenas para modelos alternativos)
         if not current and previous_car:
             col_copy, col_space = st.columns([0.3, 0.7])
             with col_copy:
@@ -569,7 +568,6 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
                 preco_combustivel = st.number_input("💰 Gasolina (R$/l)", 0.0, 20.0, d_preco_comb, 0.05, key=f"fuel_{index}")
             with uso_cols[2]:
                 percentual_recarga_externa = st.slider("🔌 Recarga externa (%)", 0.0, 100.0, d_recarga, 5.0, key=f"ext_{index}")
-
             if percentual_recarga_externa > 0:
                 elet_cols = st.columns(2)
                 with elet_cols[0]:
@@ -595,14 +593,13 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
         if pagamento == "Financiado":
             fin_cols = st.columns(3)
             with fin_cols[0]:
-                pct = (d_entrada / valor_base * 100) if valor_base > 0 else 20.0
+                pct = (d_entrada / valor_base * 100) if valor_base > 0 else fin_entry_pct_default
                 pct = st.slider("💵 Entrada (%)", 0.0, 100.0, pct, 5.0, key=f"down_pct_{index}")
                 entrada_extra = valor_base * pct / 100
             with fin_cols[1]:
                 taxa = st.number_input("📈 Juros mensais (%)", 0.0, 10.0, d_taxa, 0.05, key=f"rate_{index}")
             with fin_cols[2]:
-                prazo = st.number_input("⏱️ Prazo (meses)", 1, 120, d_prazo, 6, key=f"term_{index}")
-
+                prazo = st.number_input("⏱️ Prazo (meses)", 1, 120, d_prazo, 1, key=f"term_{index}")
             parcela = financing_monthly_payment(
                 CarInputs(id="", nome="", carro_atual=False, tipo="Combustao", valor_base=valor_base,
                           pagamento="Financiado", entrada_extra=entrada_extra, taxa_juros_am=taxa, prazo_meses=int(prazo),
@@ -612,7 +609,6 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
                           pneus_anual=0, estacionamento_anual=0, outros_anuais=0, horizonte_anos=horizon,
                           depreciation_factor=d_depr))
             st.success(f"💳 Parcela: {monthly_money(parcela)}")
-
             financed = valor_base - entrada_extra
             total_paid = parcela * prazo
             total_cost = entrada_extra + total_paid
@@ -625,15 +621,20 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
                 f"Total pago em parcelas: {money(total_paid)}\n\n"
                 f"**Custo total (entrada + parcelas): {money(total_cost)}**"
             )
+            st.caption("📉 Depreciação (informativo)")
+            depr = st.slider("Fator anual (%)", 0.0, 30.0, d_depr, 1.0, key=f"depr_{index}")
+
         elif pagamento == "Assinatura":
+            st.caption("📅 Condições da Assinatura")
             sub_cols = st.columns(2)
             with sub_cols[0]:
                 assinatura_mensal = st.number_input("📅 Mensalidade (R$/mês)", 0.0, 100_000.0, d_assinatura_m, 100.0, key=f"sub_m_{index}")
             with sub_cols[1]:
                 taxa_inicial_assinatura = st.number_input("💳 Taxa inicial (R$)", 0.0, 100_000.0, d_assinatura_tx, 500.0, key=f"sub_fee_{index}")
-            st.info("IPVA, seguro, licenciamento, manutenção e pneus estão inclusos na assinatura.")
+            st.info("✅ **Inclusos na assinatura**: IPVA, seguro, licenciamento, manutenção corretiva e pneus.\n\n"
+                   "❌ **Não inclusos**: Combustível/energia, estacionamento, multas e acessórios.")
         else:
-            st.caption("📉 Depreciação (informativo)")
+            st.caption("📉 Depreciação")
             depr = st.slider("Fator anual (%)", 0.0, 30.0, d_depr, 1.0, key=f"depr_{index}")
 
         st.divider()
@@ -658,7 +659,6 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
                 seguro = st.number_input("🛡️ Seguro anual (R$)", 0.0, 100_000.0, d_seguro, 250.0, key=f"ins_{index}")
             with fixed_cols[2]:
                 licenciamento = st.number_input("📝 Licenciamento anual (R$)", 0.0, 10_000.0, d_lic, 50.0, key=f"lic_{index}")
-
             running_cols = st.columns(4)
             with running_cols[0]:
                 manutencao = st.number_input("🔧 Manutenção/ano", 0.0, 100_000.0, d_manut, 100.0, key=f"maint_{index}")
@@ -668,7 +668,6 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
                 estacionamento = st.number_input("🅿️ Estacionamento/ano", 0.0, 100_000.0, d_estac, 100.0, key=f"park_{index}")
             with running_cols[3]:
                 outros = st.number_input("📦 Outros/ano", 0.0, 100_000.0, d_outros, 100.0, key=f"other_{index}")
-
             st.caption("💰 Revisões por ano")
             rev_cols = st.columns(min(horizon, 5))
             revisoes = []
@@ -681,13 +680,10 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
                     100.0,
                     key=f"rev_{index}_{y}"
                 ))
-
             media_revisoes = sum(revisoes) / len(revisoes) if revisoes else 0.0
             st.info(f"📊 **Média anual de revisões no período: {money(media_revisoes)}**")
 
-        # Message about additional capital needed
         if not current:
-            # Usar trade_in específico do modelo ao invés de current_value
             trade_in_valor = trade_in if trade_in > 0 else (current_value if current_value else 0.0)
             if pagamento == "A vista":
                 cap_adicional = max(0.0, valor_base - trade_in_valor)
@@ -695,7 +691,6 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
                 cap_adicional = max(0.0, entrada_extra - trade_in_valor)
             else:
                 cap_adicional = 0.0
-
             if cap_adicional > 0:
                 st.warning(f"💸 **Capital Adicional Necessário: {money(cap_adicional)}**\n\n"
                            f"Esse valor precisará ser desembolsado (além da troca do seu carro) e gerará um custo de oportunidade anual de {investment_return:.1f}%.")
@@ -734,37 +729,32 @@ def car_form(index: int, ipva_default: float, horizon: int, current_value: float
     )
 
 
-def make_break_even(current: CarInputs, target: CarInputs, investment_return: float) -> pd.DataFrame:
-    """Gera malha de preços e consumos para calcular diferença no custo anual médio."""
+def make_break_even(current: CarInputs, target: CarInputs, investment_return: float, fin_term_default: float = 24) -> pd.DataFrame:
     target_prices = np.linspace(max(target.valor_base * 0.6, 10_000), target.valor_base * 1.4, 30)
     if target.tipo == "Eletrico":
         consumptions = np.linspace(3.0, 10.0, 30)
     else:
         consumptions = np.linspace(5, 25, 30)
-
-    # custo anual médio do carro atual
-    current_annual = simulate_car(current, current.valor_base, investment_return)["Custo total anual"].mean()
+    current_annual = simulate_car(current, current.valor_base, investment_return, fin_term_default)["Custo total anual"].mean()
     rows = []
-
     for price in target_prices:
         for consumption in consumptions:
             candidate = CarInputs(**target.__dict__)
             candidate.valor_base = float(price)
-            # ajusta seguro proporcionalmente ao preço
             candidate.seguro_anual = price * (target.seguro_anual / max(target.valor_base, 1))
             if candidate.tipo == "Eletrico":
                 candidate.consumo_km_kwh = float(consumption)
             else:
                 candidate.consumo_km_l = float(consumption)
-            target_annual = simulate_car(candidate, current.valor_base, investment_return)["Custo total anual"].mean()
+            target_annual = simulate_car(candidate, current.valor_base, investment_return, fin_term_default)["Custo total anual"].mean()
             diff = target_annual - current_annual
             rows.append({
                 "Valor do carro": price,
                 "Consumo": consumption,
                 "Diferenca anual vs atual": diff,
             })
-
     return pd.DataFrame(rows)
+
 
 def main():
     st.set_page_config(page_title="Comparador de Custo de Manter Veículos", layout="wide")
@@ -772,53 +762,37 @@ def main():
 
     # ==================== SIDEBAR ====================
     st.sidebar.title("⚙️ Menu")
-    
-    # Botão de reset no sidebar
-    st.sidebar.markdown("### 🔄 Ações Gerais")
-    if st.sidebar.button("🔄 Resetar Tudo\n(depois aperte F5)", use_container_width=True, help="Limpar todos os dados. Após clicar, aperte F5 para atualizar a página"):
+    if st.sidebar.button("🔄 Resetar Tudo\n(depois aperte F5)", use_container_width=True):
         clear_draft()
-        # Limpar caches internos do Streamlit
         st.cache_data.clear()
         st.cache_resource.clear()
-        
-        # Deletar chaves de session_state mais importantes
-        keys_to_delete = ["ipva_default", "horizon", "investment_return", "cars", 
+        keys_to_delete = ["ipva_default", "horizon", "investment_return", "cars",
                         "draft_restored", "previous_state", "save_name_input",
                         "last_auto_save_time", "skip_draft_restore"]
         for key in keys_to_delete:
             if key in st.session_state:
                 del st.session_state[key]
-
         if "reload_notice" in st.session_state:
             del st.session_state["reload_notice"]
-        
-        # Deletar TODAS as chaves de widgets de formulário (padrão completo)
-        widget_patterns = ["name_", "pay_", "type_", "value_", "km_", 
-                          "ipva_", "km_l_", "fuel_", "ext_", "km_kwh_", 
-                          "kwh_", "down_pct_", "rate_", "term_", "ins_", 
-                          "maint_", "tires_", "park_", "other_", "rev_", 
+        widget_patterns = ["name_", "pay_", "type_", "value_", "km_",
+                          "ipva_", "km_l_", "fuel_", "ext_", "km_kwh_",
+                          "kwh_", "down_pct_", "rate_", "term_", "ins_",
+                          "maint_", "tires_", "park_", "other_", "rev_",
                           "trade_in_", "sub_", "depr_", "copy_from_",
                           "lic_", "copy_", "load_recent_", "load_sidebar_",
                           "manage", "be_select", "btn_"]
-        
-        widget_pattern_keys = [k for k in list(st.session_state.keys()) 
+        widget_pattern_keys = [k for k in list(st.session_state.keys())
                              if any(pattern in k for pattern in widget_patterns)]
         for key in widget_pattern_keys:
             if key in st.session_state:
                 del st.session_state[key]
-        
-        # Flag para pular a restauração do draft
         st.session_state.skip_draft_restore = True
-        
-        # Mensagem informativa
         st.warning("✅ Dados deletados! Agora aperte **F5** para recarregar a página e ver as alterações.")
-    
-    # Simulações recentes no sidebar
+
     st.sidebar.markdown("### 📂 Últimas Simulações")
     simulations = get_simulations_metadata()
-    
     if simulations:
-        recent = simulations[:10]  # Mostrar últimas 10 no sidebar
+        recent = simulations[:10]
         for sim in recent:
             models_display = format_simulation_title(sim['models'])
             with st.sidebar.expander(f"📅 {sim['timestamp']}\n{models_display}", expanded=False):
@@ -839,13 +813,10 @@ def main():
                         st.error(f"❌ Erro ao carregar: {e}")
     else:
         st.sidebar.info("Nenhuma simulação salva ainda.")
-    
-    st.sidebar.divider()
 
-    # Restore draft - MAS PULAR SE FOI ACIONADO RESET
+    st.sidebar.divider()
     skip_restore = st.session_state.get("skip_draft_restore", False)
     if skip_restore:
-        # Limpar a flag após usar
         del st.session_state.skip_draft_restore
         st.info("🧹 Todos os dados foram limpos. Comece do zero!")
     else:
@@ -866,18 +837,22 @@ def main():
     investment_return_val = st.session_state.get("investment_return", 10.0)
     cars_loaded = st.session_state.get("cars", [])
 
-    state, ipva_default, horizon, investment_return = add_general_assumptions(ipva_default_val, horizon_val, investment_return_val)
+    state, ipva_default, horizon, investment_return, fin_entry_pct, fin_rate, fin_term = add_general_assumptions(ipva_default_val, horizon_val, investment_return_val)
 
     st.subheader("🧠 Premissas da Análise")
     st.write(
-        "**Custo de oportunidade**: incide apenas sobre o **capital adicional** que você precisa desembolsar **além do valor do seu carro atual**. "
-        "Esse capital adicional deixa de ser investido – portanto o custo anual considera **juros compostos** (o rendimento perdido cresce a cada ano). "
-        "Se o carro atual cobre a entrada (financiamento) ou o preço total (à vista), o custo de oportunidade é zero. "
-        "O valor financiado não gera custo de oportunidade adicional."
+        "**Custo de oportunidade**: incide apenas sobre o **capital adicional** durante o período em que ele está sendo utilizado:\n\n"
+        "- **À vista**: o capital inteiro é desembolsado no ano 1, gerando custo de oportunidade pelo **prazo padrão de financiamento** "
+        f"(atualmente {int(fin_term)} meses). Isso representa quanto você teria ganho se tivesse investido esse capital.\n\n"
+        "- **Financiado**: apenas a **entrada** gera custo de oportunidade, e apenas durante o **prazo do financiamento do modelo**. "
+        "Após o financiamento ser quitado, não há mais custo. O custo é calculado com **juros compostos** durante o período.\n\n"
+        "- **Assinatura**: não há capital adicional, portanto **não há custo de oportunidade**.\n\n"
+        "Se o carro atual cobre a entrada (financiamento) ou o preço total (à vista), o custo de oportunidade é zero."
     )
 
     current = car_form(0, ipva_default, horizon, default_car=cars_loaded[0] if cars_loaded else None,
-                       investment_return=investment_return)
+                       investment_return=investment_return,
+                       fin_entry_pct_default=fin_entry_pct, fin_rate_default=fin_rate, fin_term_default=fin_term)
     n_models = st.number_input("💶 Quantos modelos alternativos comparar?", 1, 20,
                                value=len(cars_loaded) - 1 if cars_loaded else 2, step=1)
     cars = [current]
@@ -886,22 +861,19 @@ def main():
         car = car_form(i, ipva_default, horizon, current.valor_base,
                       default_car=cars_loaded[i] if cars_loaded and i < len(cars_loaded) else None,
                       investment_return=investment_return,
+                      fin_entry_pct_default=fin_entry_pct, fin_rate_default=fin_rate, fin_term_default=fin_term,
                       previous_car=previous_car)
         cars.append(car)
 
     save_draft(ipva_default, horizon, investment_return, cars)
 
-    # Save / manage with auto-generated name
     with st.expander("💾 Salvar / Gerenciar Simulações", expanded=False):
         col_a, col_b = st.columns(2)
         with col_a:
-            # Generate default name from model names
             model_names = [car.nome for car in cars if car.nome.strip()]
             default_name = "_".join(model_names).replace(" ", "_")
-            # Use session state to keep the name if user already typed something
             if "save_name_input" not in st.session_state:
                 st.session_state.save_name_input = default_name
-            # Button to regenerate name from current models
             if st.button("🔄 Gerar nome a partir dos modelos"):
                 st.session_state.save_name_input = default_name
                 st.rerun()
@@ -922,8 +894,8 @@ def main():
                         st.success(f"'{manage}' excluída!")
                         st.rerun()
 
-    # Simulation
-    sim_df = pd.concat([simulate_car(car, current.valor_base, investment_return) for car in cars], ignore_index=True)
+    # Simulação
+    sim_df = pd.concat([simulate_car(car, current.valor_base, investment_return, fin_term_default=fin_term) for car in cars], ignore_index=True)
     annual_avg = sim_df.groupby(["Modelo", "ID"])["Custo total anual"].mean().reset_index()
     annual_avg["Custo mensal médio"] = annual_avg["Custo total anual"] / 12
     annual_avg = annual_avg.sort_values("Custo total anual")
@@ -934,28 +906,27 @@ def main():
     st.metric(label=f"✅ {winner['Modelo']}", value=money(winner["Custo total anual"]), help="Custo anual médio")
     st.caption("Custo anual médio considerado ao longo do período da análise (já com juros compostos no custo de oportunidade).")
 
-    # Comparison table
-    st.dataframe(
-        annual_avg[["Modelo", "Custo total anual", "Custo mensal médio"]]
-        .style.format({"Custo total anual": money, "Custo mensal médio": money}),
-        use_container_width=True,
-    )
+    # Tabela resumo com destaque no vencedor
+    # Função para colorir a linha do vencedor
+    def highlight_winner(s):
+        return ['background-color: #c6efce' if s.Modelo == winner['Modelo'] else '' for _ in range(len(s))]
+    styled_annual = annual_avg[["Modelo", "Custo total anual", "Custo mensal médio"]].style \
+        .format({"Custo total anual": money, "Custo mensal médio": money}) \
+        .apply(highlight_winner, axis=1)
+    st.dataframe(styled_annual, use_container_width=True)
 
-    # Opportunity cost detail
     st.subheader("💼 Custo de Oportunidade Detalhado")
     st.caption(
-        "Aqui o custo de oportunidade é calculado ano a ano com juros compostos. "
-        "Depois somamos o total no horizonte da simulação e dividimos pelo número de anos para obter a média anual. "
-        "A média mensal é a média anual dividida por 12."
+        "O custo de oportunidade é calculado apenas durante o período em que o capital adicional está sendo utilizado, "
+        "agora corretamente para qualquer número de meses (inclusive prazos menores que 1 ano). "
+        "Com juros compostos, o custo acumula ao longo dos anos."
     )
-
     opp_data = []
     for car in cars:
         if car.carro_atual:
             cap_adicional = 0.0
             trade_in_value = 0.0
         else:
-            # Usar trade_in específico do modelo se definido, caso contrário usar valor do carro atual
             trade_in_value = getattr(car, 'valor_carro_atual_trade_in', 0.0)
             trade_in_value = trade_in_value if trade_in_value > 0 else current.valor_base
             if car.pagamento == "A vista":
@@ -964,38 +935,32 @@ def main():
                 cap_adicional = max(0.0, car.entrada_extra - trade_in_value)
             else:
                 cap_adicional = 0.0
-
         car_rows = sim_df[sim_df["ID"] == car.id]
         opp_total_periodo = float(car_rows["Custo de oportunidade"].sum()) if not car_rows.empty else 0.0
         opp_medio_anual = opp_total_periodo / max(horizon, 1)
         opp_medio_mensal = opp_medio_anual / 12
-        first_year_opp = cap_adicional * investment_return / 100
-
         opp_data.append({
-            "Modelo": car.nome,
+            "Modelo": display_car_name(car),
             "Valor de Troca": trade_in_value,
             "Capital Adicional": cap_adicional,
-            "Custo Oport. Total no Período": opp_total_periodo,
+            "Custo Oport. Total (Empatado)": opp_total_periodo,
             "Custo Oport. Médio Anual": opp_medio_anual,
             "Custo Oport. Médio Mensal": opp_medio_mensal,
-            "Custo Oport. (1º ano)": first_year_opp,
         })
     opp_df = pd.DataFrame(opp_data)
     st.dataframe(
         opp_df.style.format({
             "Valor de Troca": money,
             "Capital Adicional": money,
-            "Custo Oport. Total no Período": money,
+            "Custo Oport. Total (Empatado)": money,
             "Custo Oport. Médio Anual": money,
             "Custo Oport. Médio Mensal": money,
-            "Custo Oport. (1º ano)": money,
         }),
         use_container_width=True,
     )
     st.caption("O custo total anual médio já incorpora o custo de oportunidade médio anual. "
                "A tabela acima mostra o valor acumulado no horizonte e sua média anual/mensal.")
 
-    # Detailed average annual cost per model (all in one table)
     st.subheader("📊 Detalhamento do Custo Anual Médio por Modelo")
     categories = ["Combustível/energia", "IPVA", "Licenciamento", "Seguro",
                   "Revisões (média anual)", "Manutenção", "Pneus", "Estacionamento", "Outros",
@@ -1008,18 +973,32 @@ def main():
     detailed = annual_avg[["Modelo", "Custo total anual", "Custo mensal médio"]].merge(breakd, on="Modelo")
     col_order = ["Modelo", "Custo total anual", "Custo mensal médio"] + categories
     detailed = detailed[col_order]
-    st.dataframe(
-        detailed.style.format({col: money for col in col_order if col != "Modelo"}),
-        use_container_width=True,
+
+    # Aplicar cores: totalizadores (Custo total anual, Custo mensal médio) -> verde claro; componentes -> azul claro
+    total_cols = ["Custo total anual", "Custo mensal médio"]
+    component_cols = [c for c in col_order if c not in total_cols and c != "Modelo"]
+    def color_columns(df):
+        styles = pd.DataFrame('', index=df.index, columns=df.columns)
+        for col in total_cols:
+            if col in styles.columns:
+                styles[col] = 'background-color: #c6efce'
+        for col in component_cols:
+            if col in styles.columns:
+                styles[col] = 'background-color: #bdd7ee'
+        return styles
+    styled_detailed = detailed.style \
+        .format({col: money for col in col_order if col != "Modelo"}) \
+        .apply(color_columns, axis=None)
+    st.dataframe(styled_detailed, use_container_width=True)
+    st.caption(
+        "🟦 Componentes do custo 🟩 Totalizadores (Custo total anual e Custo mensal médio)\n\n"
+        "O **Custo mensal médio** é obtido dividindo o **Custo total anual médio** por 12. "
+        "Ele representa a média mensal de todos os custos operacionais, financeiros e de oportunidade ao longo do horizonte da simulação."
     )
 
     # ---------- Gráficos ----------
     st.subheader("📈 Gráficos")
-
-    # Paleta com 24 cores vibrantes (suficiente para até 24 categorias)
     custom_palette = px.colors.qualitative.Plotly
-
-    # 1. Custo anual médio por modelo
     fig1 = px.bar(annual_avg, x="Modelo", y="Custo total anual",
                 text=annual_avg["Custo total anual"].map(money),
                 color="Modelo", title="Custo Anual Médio por Modelo",
@@ -1029,7 +1008,6 @@ def main():
     fig1.update_layout(height=450, width=800)
     st.plotly_chart(fig1, use_container_width=False, width=800)
 
-    # 2. Composição Média Anual (barras empilhadas)
     bar_data = breakd.melt("Modelo", var_name="Categoria", value_name="Custo")
     bar_data["Rótulo"] = bar_data.apply(lambda r: f"{r['Categoria']}: {short_money(r['Custo'])}", axis=1)
     fig2 = px.bar(bar_data, x="Modelo", y="Custo", color="Categoria", text="Rótulo",
@@ -1047,14 +1025,13 @@ def main():
     )
     st.plotly_chart(fig2, use_container_width=False, width=900)
 
-    # 3. Depreciação (linhas)
     dep_data = []
     for car in cars:
         if car.pagamento != "Assinatura":
             rate = car.depreciation_factor / 100
             val = car.valor_base if not car.carro_atual else current.valor_base
             for y in range(1, horizon + 1):
-                dep_data.append({"Modelo": car.nome, "Ano": y, "Valor": val * (1 - rate) ** y})
+                dep_data.append({"Modelo": display_car_name(car), "Ano": y, "Valor": val * (1 - rate) ** y})
     if dep_data:
         dep_df = pd.DataFrame(dep_data)
         dep_df["Rotulo"] = dep_df["Valor"].map(short_money)
@@ -1065,15 +1042,14 @@ def main():
         fig3.update_layout(height=450, width=800)
         st.plotly_chart(fig3, use_container_width=False, width=800)
 
-    # 4. Break‑even
     st.subheader("📈 Ponto de Virada (Break-Even)")
     st.markdown("Explore como preço e consumo afetariam a decisão. Valores negativos (azul) = modelo alternativo mais barato que o atual.")
-    target_options = {f"{car.nome} ({car.id})": car for car in cars if car.id != current.id}
+    target_options = {display_car_name(car): car for car in cars if car.id != current.id}
     if target_options:
         target_label = st.selectbox("🔍 Modelo para Testar contra o Carro Atual", list(target_options.keys()), key="be_select")
         target = target_options[target_label]
         with st.spinner("Gerando malha de break‑even..."):
-            be_df = make_break_even(current, target, investment_return)
+            be_df = make_break_even(current, target, investment_return, fin_term_default=fin_term)
         unit = "km/kWh" if target.tipo == "Eletrico" else "km/l"
         fig_be = go.Figure(data=go.Contour(
             x=be_df["Valor do carro"],
@@ -1088,10 +1064,10 @@ def main():
             y=[target.consumo_km_kwh if target.tipo == "Eletrico" else target.consumo_km_l],
             mode="markers",
             marker=dict(size=14, color="black", symbol="x"),
-            name=f"{target.nome} atual",
+            name=f"{display_car_name(target)} atual",
         ))
         fig_be.update_layout(
-            title=f"Break‑even: {target.nome} vs {current.nome}",
+            title=f"Break‑even: {display_car_name(target)} vs {display_car_name(current)}",
             xaxis_title="Preço do veículo (R$)",
             yaxis_title=f"Consumo ({unit})",
             height=600,
@@ -1103,14 +1079,11 @@ def main():
     else:
         st.info("Adicione ao menos um modelo alternativo para ativar o break‑even.")
 
-    # ================== BOTÃO PDF (SOMENTE UM, CORRIGIDO) ==================
+    # ================== BOTÃO PDF ==================
     st.subheader("📄 Relatório em PDF")
-    
-    # Verificar disponibilidade das bibliotecas
     try:
         import reportlab
         import kaleido
-        from reportlab.lib.pagesizes import A4, landscape
         pdf_available = True
     except ImportError as e:
         pdf_available = False
@@ -1119,7 +1092,6 @@ def main():
 
     if pdf_available:
         if st.button("📄 Gerar Relatório PDF", key="btn_pdf"):
-            # Imports necessários (feitos aqui para não pesar o carregamento inicial)
             from reportlab.lib.pagesizes import A4
             from reportlab.lib import colors
             from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
@@ -1127,16 +1099,16 @@ def main():
             from reportlab.lib.units import cm
             import plotly.io as pio
             import io
-            import tempfile
 
             with st.spinner("Gerando relatório PDF... Isso pode levar alguns segundos."):
-                # Determinar modelo vencedor
-                winner_name = annual_avg.iloc[0]["Modelo"]
-                winner_car = next(car for car in cars if car.nome == winner_name)
-                other_cars = [car for car in cars if car.nome != winner_name]
+                def unit_price(value: float) -> str:
+                    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-                # Reconstruir figuras para o PDF (garantia)
-                custom_palette = px.colors.qualitative.Plotly
+                winner_name = annual_avg.iloc[0]["Modelo"]
+                winner_car = next(car for car in cars if display_car_name(car) == winner_name)
+                other_cars = [car for car in cars if display_car_name(car) != winner_name]
+
+                # Gráficos para PDF
                 fig1_pdf = px.bar(annual_avg, x="Modelo", y="Custo total anual",
                                  text=annual_avg["Custo total anual"].map(money),
                                  color="Modelo", title="Custo Anual Médio por Modelo",
@@ -1167,7 +1139,7 @@ def main():
                         rate = car.depreciation_factor / 100
                         val = car.valor_base if not car.carro_atual else current.valor_base
                         for y in range(1, horizon + 1):
-                            dep_data_pdf.append({"Modelo": car.nome, "Ano": y, "Valor": val * (1 - rate) ** y})
+                            dep_data_pdf.append({"Modelo": display_car_name(car), "Ano": y, "Valor": val * (1 - rate) ** y})
                 if dep_data_pdf:
                     dep_df_pdf = pd.DataFrame(dep_data_pdf)
                     fig3_pdf = px.line(dep_df_pdf, x="Ano", y="Valor", color="Modelo", markers=True,
@@ -1184,17 +1156,16 @@ def main():
                         img_bytes = pio.to_image(fig, format="png", width=width, scale=2)
                         return img_bytes
                     except Exception as e:
-                        st.error(f"Erro ao converter gráfico para imagem: {e}")
+                        st.error(f"Erro ao converter gráfico: {e}")
                         return None
 
                 img1 = fig_to_image(fig1_pdf)
                 img2 = fig_to_image(fig2_pdf)
                 img3 = fig_to_image(fig3_pdf) if fig3_pdf else None
 
-                # Break-even plots
                 be_images = []
                 for other in other_cars:
-                    be_df = make_break_even(winner_car, other, investment_return)
+                    be_df = make_break_even(winner_car, other, investment_return, fin_term_default=fin_term)
                     unit = "km/kWh" if other.tipo == "Eletrico" else "km/l"
                     fig_be = go.Figure(data=go.Contour(
                         x=be_df["Valor do carro"],
@@ -1209,10 +1180,10 @@ def main():
                         y=[other.consumo_km_kwh if other.tipo == "Eletrico" else other.consumo_km_l],
                         mode="markers",
                         marker=dict(size=14, color="black", symbol="x"),
-                        name=f"{other.nome} atual",
+                        name=f"{display_car_name(other)} atual",
                     ))
                     fig_be.update_layout(
-                        title=f"Break‑even: {other.nome} vs {winner_car.nome}",
+                        title=f"Break‑even: {display_car_name(other)} vs {display_car_name(winner_car)}",
                         xaxis_title="Preço do veículo (R$)",
                         yaxis_title=f"Consumo ({unit})",
                         height=500,
@@ -1220,16 +1191,14 @@ def main():
                     )
                     be_img = fig_to_image(fig_be, width=800)
                     if be_img:
-                        be_images.append((other.nome, be_img))
+                        be_images.append((display_car_name(other), be_img))
 
-                # Construir PDF
                 pdf_buffer = io.BytesIO()
                 doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, topMargin=1.5*cm, bottomMargin=1.5*cm)
                 styles = getSampleStyleSheet()
                 title_style = styles["Title"]
                 heading_style = styles["Heading2"]
                 normal_style = styles["Normal"]
-
                 story = []
 
                 def add_kv_section(title, rows, col_widths=(6 * cm, 10 * cm)):
@@ -1249,29 +1218,25 @@ def main():
                     story.append(table)
                     story.append(Spacer(1, 0.3 * cm))
 
-                # Título
                 story.append(Paragraph("Relatório de Comparação de Custos de Veículos", title_style))
                 story.append(Spacer(1, 0.5*cm))
-
-                # Premissas
                 story.append(Paragraph("Premissas Gerais", heading_style))
                 story.append(Paragraph(f"Estado para IPVA padrão: {state} (alíquota {ipva_default:.1f}%)", normal_style))
                 story.append(Paragraph(f"Período de análise: {horizon} anos", normal_style))
                 story.append(Paragraph(f"Retorno esperado de investimentos: {investment_return:.1f}% a.a.", normal_style))
                 story.append(Spacer(1, 0.5*cm))
 
-                # Tabela de modelos comparados
                 story.append(Paragraph("Modelos Analisados", heading_style))
                 model_table_data = [["Modelo", "Tipo", "Pagamento", "Valor (R$)", "Km/mês"]]
                 for car in cars:
                     model_table_data.append([
-                        car.nome,
+                        display_car_name(car),
                         car.tipo,
                         car.pagamento,
                         money(car.valor_base),
                         f"{car.km_mes:.0f}"
                     ])
-                model_table = Table(model_table_data, colWidths=[4*cm, 3*cm, 3.5*cm, 3.5*cm, 3*cm])
+                model_table = Table(model_table_data, colWidths=[5.5*cm, 2.5*cm, 2.5*cm, 3.5*cm, 2.5*cm])
                 model_table.setStyle(TableStyle([
                     ('BACKGROUND', (0,0), (-1,0), colors.grey),
                     ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
@@ -1285,10 +1250,10 @@ def main():
                 story.append(model_table)
                 story.append(Spacer(1, 0.5*cm))
 
-                # Inputs detalhados por carro (incluindo valor de troca do carro atual)
                 story.append(Paragraph("Dados Completos de Entrada", heading_style))
                 for car in cars:
-                    story.append(Paragraph(f"<b>{car.nome}</b>", styles["Heading3"]))
+                    display_name = display_car_name(car)
+                    story.append(Paragraph(f"<b>{display_name}</b>", styles["Heading3"]))
                     main_rows = [
                         ["Tipo", car.tipo],
                         ["Forma de pagamento", car.pagamento],
@@ -1313,20 +1278,20 @@ def main():
                     if car.tipo == "Combustao":
                         usage_rows = [
                             ["Consumo", f"{car.consumo_km_l:.1f} km/l"],
-                            ["Preço combustível", money(car.preco_combustivel) + "/l"],
+                            ["Preço combustível", f"{unit_price(car.preco_combustivel)}/l"],
                         ]
                     elif car.tipo == "Eletrico":
                         usage_rows = [
                             ["Consumo", f"{car.consumo_km_kwh:.1f} km/kWh"],
-                            ["Preço energia", money(car.preco_kwh) + "/kWh"],
+                            ["Preço energia", f"{unit_price(car.preco_kwh)}/kWh"],
                         ]
                     else:
                         usage_rows = [
                             ["Consumo gasolina", f"{car.consumo_km_l:.1f} km/l"],
-                            ["Preço gasolina", money(car.preco_combustivel) + "/l"],
+                            ["Preço gasolina", f"{unit_price(car.preco_combustivel)}/l"],
                             ["Recarga externa", f"{car.percentual_recarga_externa:.0f}%"],
                             ["Consumo elétrico", f"{car.consumo_km_kwh:.1f} km/kWh"],
-                            ["Preço energia", money(car.preco_kwh) + "/kWh"],
+                            ["Preço energia", f"{unit_price(car.preco_kwh)}/kWh"],
                         ]
                     add_kv_section("Uso e energia", usage_rows)
 
@@ -1378,13 +1343,12 @@ def main():
                     add_kv_section("Custos anuais", annual_rows)
                 story.append(PageBreak())
 
-                # Resultados: tabelas
                 story.append(Paragraph("Resultados da Simulação", heading_style))
                 story.append(Paragraph("Resumo do custo de oportunidade", heading_style))
                 opp_summary = opp_df[[
                     "Modelo",
                     "Capital Adicional",
-                    "Custo Oport. Total no Período",
+                    "Custo Oport. Total (Empatado)",
                     "Custo Oport. Médio Anual",
                     "Custo Oport. Médio Mensal",
                 ]].copy()
@@ -1406,57 +1370,59 @@ def main():
                 comp_data = [["Modelo", "Custo Total Anual Médio", "Custo Mensal Médio"]]
                 for _, row in annual_avg.iterrows():
                     comp_data.append([row["Modelo"], money(row["Custo total anual"]), money(row["Custo mensal médio"])])
-                comp_table = Table(comp_data, colWidths=[4*cm, 4*cm, 4*cm])
+                # Aumentar coluna Modelo para 6 cm, as outras 6 cm cada (total 18 cm)
+                comp_table = Table(comp_data, colWidths=[6*cm, 6*cm, 6*cm])
                 comp_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0,0), (-1,0), colors.grey), ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-                    ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                    ('BACKGROUND', (0,0), (-1,0), colors.grey),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                    # Destaque para o vencedor (primeira linha de dados)
+                    ('BACKGROUND', (0,1), (-1,1), colors.HexColor('#c6efce')),
                 ]))
                 story.append(comp_table)
                 story.append(Spacer(1, 0.5*cm))
 
                 story.append(Paragraph("Detalhamento dos Custos Médios Anuais", heading_style))
-
-                # Prepara os dados da tabela
                 detailed_display = detailed.copy()
                 for col in detailed_display.columns[1:]:
                     detailed_display[col] = detailed_display[col].apply(money)
 
-                # Quebrar cabeçalhos em múltiplas linhas manualmente
+                # Cabeçalhos abreviados para caberem
                 header_mapping = {
                     "Modelo": "Modelo",
                     "Custo total anual": "Custo total\nanual",
                     "Custo mensal médio": "Custo mensal\nmédio",
-                    "Combustível/energia": "Combustível/\nenergia",
+                    "Combustível/energia": "Comb./\nenerg.",
                     "IPVA": "IPVA",
-                    "Licenciamento": "Licenciamento",
+                    "Licenciamento": "Licenciam.",
                     "Seguro": "Seguro",
-                    "Revisões (média anual)": "Revisões\n(média anual)",
+                    "Revisões (média anual)": "Revisões",
                     "Manutenção": "Manutenção",
                     "Pneus": "Pneus",
-                    "Estacionamento": "Estacionamento",
+                    "Estacionamento": "Estacion.",
                     "Outros": "Outros",
                     "Assinatura": "Assinatura",
-                    "Custo de oportunidade": "Custo de\noportunidade\nmédio",
-                    "Juros financiamento": "Juros\nfinanciamento",
+                    "Custo de oportunidade": "Custo\nde oport.",
+                    "Juros financiamento": "Juros\nfinanc.",
                 }
-
                 headers = [header_mapping.get(col, col) for col in detailed_display.columns]
                 detailed_data = [headers] + detailed_display.values.tolist()
-
-                # Largura total útil em A4 retrato (21cm - margens de 1.5cm cada = 18cm)
                 available_width = 18 * cm
                 num_cols = len(detailed_display.columns)
-                col_width = available_width / num_cols
-
-                # Cria a tabela com larguras proporcionais
-                detail_table = Table(detailed_data, repeatRows=1, colWidths=[col_width] * num_cols)
-
-                # Estilo com fonte menor e centralizado
-                detail_table.setStyle(TableStyle([
+                first_col_width = 4 * cm
+                other_cols_width = (available_width - first_col_width) / (num_cols - 1)
+                col_widths = [first_col_width] + [other_cols_width] * (num_cols - 1)
+                detail_table = Table(detailed_data, repeatRows=1, colWidths=col_widths)
+                # Estilo com cores para componentes e totalizadores
+                # Aplicar cor de fundo nas células de dados conforme o tipo de coluna
+                total_indices = [i for i, col in enumerate(detailed_display.columns) if col in total_cols]
+                component_indices = [i for i, col in enumerate(detailed_display.columns) if col in component_cols]
+                style_cmds = [
                     ('BACKGROUND', (0,0), (-1,0), colors.grey),
                     ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-                    ('FONTSIZE', (0,0), (-1,0), 5),           # cabeçalho com fonte 5
-                    ('FONTSIZE', (0,1), (-1,-1), 5),          # dados também 5
+                    ('FONTSIZE', (0,0), (-1,0), 5),
+                    ('FONTSIZE', (0,1), (-1,-1), 5),
                     ('GRID', (0,0), (-1,-1), 0.3, colors.grey),
                     ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
                     ('ALIGN', (0,0), (-1,-1), 'CENTER'),
@@ -1464,12 +1430,24 @@ def main():
                     ('RIGHTPADDING', (0,0), (-1,-1), 1),
                     ('TOPPADDING', (0,0), (-1,-1), 1),
                     ('BOTTOMPADDING', (0,0), (-1,-1), 2),
-                ]))
-
+                ]
+                # Aplicar cor verde para totalizadores, azul para componentes
+                for row_idx in range(1, len(detailed_data)):
+                    for col_idx in total_indices:
+                        style_cmds.append(('BACKGROUND', (col_idx, row_idx), (col_idx, row_idx), colors.HexColor('#c6efce')))
+                    for col_idx in component_indices:
+                        style_cmds.append(('BACKGROUND', (col_idx, row_idx), (col_idx, row_idx), colors.HexColor('#bdd7ee')))
+                detail_table.setStyle(TableStyle(style_cmds))
                 story.append(detail_table)
+                story.append(Spacer(1, 0.3*cm))
+                story.append(Paragraph(
+                    "🟦 Componentes do custo 🟩 Totalizadores (Custo total anual e Custo mensal médio). "
+                    "O <b>Custo mensal médio</b> é o Custo total anual médio dividido por 12, "
+                    "representando a média mensal de todos os custos ao longo do horizonte.",
+                    styles["Normal"]
+                ))
                 story.append(PageBreak())
 
-                # Gráficos
                 story.append(Paragraph("Gráficos da Análise", heading_style))
                 if img1:
                     story.append(Paragraph("Custo Anual Médio por Modelo", styles["Heading3"]))
@@ -1484,20 +1462,17 @@ def main():
                     story.append(Image(io.BytesIO(img3), width=16*cm, height=9*cm))
                     story.append(Spacer(1, 0.5*cm))
 
-                # Break-even contra o vencedor
                 if be_images:
                     story.append(PageBreak())
-                    story.append(Paragraph(f"Análise de Break‑even - {winner_car.nome} como referência", heading_style))
+                    story.append(Paragraph(f"Análise de Break‑even - {winner_name} como referência", heading_style))
                     for name, be_img in be_images:
                         if be_img:
-                            story.append(Paragraph(f"<b>{name} vs {winner_car.nome}</b>", styles["Heading3"]))
+                            story.append(Paragraph(f"<b>{name} vs {winner_name}</b>", styles["Heading3"]))
                             story.append(Image(io.BytesIO(be_img), width=16*cm, height=10*cm))
                             story.append(Spacer(1, 0.5*cm))
 
-                # Finalizar PDF
                 doc.build(story)
                 pdf_bytes = pdf_buffer.getvalue()
-
                 st.download_button(
                     label="⬇️ Baixar Relatório PDF",
                     data=pdf_bytes,
